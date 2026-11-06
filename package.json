@@ -11,7 +11,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "check": "node scripts/preflight.js"
+    "check": "node scripts/preflight.js",
+    "deploy:cf": "wrangler deploy",
+    "dev:cf": "wrangler dev"
   },
   "dependencies": {
     "ws": "^8.18.0"

@@ -1,10 +1,9 @@
 /**
- * Process supervisor for the two cores (Xray-core and sing-box).
+ * BBG · By SANDBAAD — Process Supervisor for Xray-core & sing-box
  *
- * Both are plain child processes started with a generated config file.  The
- * supervisor keeps a ring buffer of their logs, validates configs before every
- * (re)start and restarts with backoff so a bad edit can never leave the service
- * dead.
+ * Manages both core engines as supervised child processes with pre-flight
+ * configuration validation (`xray -test` / `sing-box check`), ring-buffered
+ * log capture, and exponential backoff auto-recovery.
  */
 import fs from 'node:fs';
 import { stripAnsi, oneLine } from './text.js';

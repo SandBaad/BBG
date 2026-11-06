@@ -1,0 +1,30 @@
+#:schema node_modules/wrangler/config-schema.json
+# ============================================================================
+# BBG · Multi-Core Anti-Censorship & Subscription Control Plane
+# Author / Maintainer: SANDBAAD
+# Cloudflare Workers & Static Assets Configuration
+# ============================================================================
+
+name = "bbg-panel"
+main = "src/worker.js"
+compatibility_date = "2025-02-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Serves ./public (Glassmorphic UI, CSS, fonts, icons) directly from Cloudflare Edge
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[vars]
+BBG_BRAND = "BBG"
+BBG_AUTHOR = "SANDBAAD"
+# Optional fallback ProxyIP for Cloudflare-to-Cloudflare & Telegram DC routing
+PROXYIP = "proxyip.fxxk.dedyn.io:443"
+
+# Optional: Bind a Cloudflare KV namespace named BBG_KV to persist users,
+# custom settings, and inbounds across edge locations.
+# Uncomment and replace `id` after running: npx wrangler kv namespace create BBG_KV
+# [[kv_namespaces]]
+# binding = "BBG_KV"
+# id = "YOUR_KV_NAMESPACE_ID"
+

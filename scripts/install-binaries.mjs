@@ -1,6 +1,5 @@
 /**
- * Local / CI helper: download the three binaries this panel supervises into
- * ./bin so `npm start` works outside Docker.
+ * BBG · By SANDBAAD — Core Binary Installer (`xray`, `sing-box`, `mtg`)
  *
  *   node scripts/install-binaries.mjs
  */

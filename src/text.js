@@ -1,4 +1,6 @@
-/** Small text helpers shared by the panel and the log pipeline. */
+/**
+ * BBG · By SANDBAAD — Log & ANSI Sanitization Helpers
+ */
 
 const ANSI = /[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
 

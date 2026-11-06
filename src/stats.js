@@ -1,10 +1,8 @@
 /**
- * Traffic accounting.
+ * BBG · By SANDBAAD — Zero-Dependency HTTP/2 gRPC Traffic Accountant
  *
- * Xray exposes the standard v2ray stats gRPC service.  Rather than pulling a
- * grpc-js dependency into a 512 MB Railway container, this module speaks the
- * (very small) subset of gRPC/protobuf it needs directly over node:http2.
- *
+ * Queries Xray's StatsService directly over `node:http2` using a lightweight
+ * protobuf wire encoder/decoder:
  *   v2ray.core.app.stats.command.StatsService/QueryStats
  *   v2ray.core.app.stats.command.StatsService/GetSysStats
  */
