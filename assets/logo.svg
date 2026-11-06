@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="200" viewBox="0 0 760 200" role="img" aria-label="BBG logo">
+  <title>BBG · SANDBAAD</title>
+  <defs>
+    <linearGradient id="bbgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2dd4bf"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="32" width="136" height="136" rx="28" fill="none" stroke="url(#bbgGrad)" stroke-width="8"/>
+  <path d="M58 100L92 66L126 100L92 134Z" fill="none" stroke="#0f172a" stroke-width="8"/>
+  <circle cx="92" cy="100" r="10" fill="#2dd4bf"/>
+
+  <text x="188" y="114" font-family="JetBrains Mono, ui-monospace, monospace"
+        font-size="84" font-weight="700" letter-spacing="-1.5" fill="#0f172a">BBG</text>
+
+  <path d="M190 130h522" stroke="#2dd4bf" stroke-width="2.5"/>
+
+  <text x="190" y="158" font-family="JetBrains Mono, ui-monospace, monospace"
+        font-size="15" font-weight="600" letter-spacing="5" fill="#0f172a">MULTI-CORE CONTROL PLANE</text>
+  <text x="712" y="158" text-anchor="end" font-family="JetBrains Mono, ui-monospace, monospace"
+        font-size="15" font-weight="700" letter-spacing="3" fill="#0ea5e9">BY SANDBAAD</text>
+</svg>

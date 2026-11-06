@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="fa" dir="rtl" data-lang="fa" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>BBG · SANDBAAD — Subscriber Portal</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%2306b6d4'/%3E%3Cstop offset='100%25' stop-color='%2310b981'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%23070b14'/%3E%3Cpath d='M8 8h9a4.5 4.5 0 0 1 3.2 7.6A4.8 4.8 0 0 1 17.5 24H8V8zm3.2 6.4h5.2a1.8 1.8 0 0 0 0-3.6h-5.2v3.6zm0 6.8h5.8a2 2 0 0 0 0-4h-5.8v4z' fill='url(%23g)'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css?v=2.0.0">
+<link rel="stylesheet" href="/extra.css?v=2.0.0">
+<style>
+  .user-links,.link-row{max-width:100%;min-width:0}
+  .link-row .lk-uri{
+    white-space:normal;overflow:visible;text-overflow:clip;
+    overflow-wrap:anywhere;word-break:break-all;min-width:0;
+  }
+  .portal-wrap{max-width:1120px;margin:28px auto;padding:0 18px;position:relative;z-index:2}
+</style>
+</head>
+<body>
+<div class="ambient-stage" aria-hidden="true">
+  <div class="orb orb-cyan"></div>
+  <div class="orb orb-amber"></div>
+  <div class="orb orb-emerald"></div>
+  <div class="ambient-grid"></div>
+</div>
+
+<div class="portal-wrap">
+  <header class="glass-card" style="margin-bottom:18px">
+    <div class="auth-brand-row">
+      <div class="brand-lockup">
+        <div class="brand-logo-badge">BBG</div>
+        <div>
+          <h1 class="brand-title">BBG <span class="brand-sub-badge">SANDBAAD</span></h1>
+          <p class="brand-caption">
+            <span class="fa">پورتال اختصاصی اشتراک شما — لینک‌های ضد-فیلتر، حجم مصرفی و QR</span>
+            <span class="en">Private Subscriber Portal — Hardened Anti-DPI Links, Quota &amp; QR</span>
+          </p>
+        </div>
+      </div>
+      <div class="top-controls">
+        <span class="pill-chip emerald mono">SUBSCRIBER PORTAL</span>
+        <button class="icon-pill" id="lang" type="button">EN</button>
+        <div class="theme-grp">
+          <button class="icon-pill t-pick" data-th="light" type="button">LIGHT</button>
+          <button class="icon-pill t-pick" data-th="dark" type="button">DARK</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div id="content">
+    <div class="glass-card"><p class="kicker">…</p><div class="meter"><i style="width:40%"></i></div></div>
+  </div>
+
+  <footer class="colophon" style="margin-top:24px">
+    <span class="mono">BBG · MAINTAINED BY SANDBAAD</span>
+    <span class="mono">LOW-LATENCY ANTI-DPI ENGINE</span>
+  </footer>
+</div>
+
+<script src="/js/qrcode.js?v=2.0.0"></script>
+<script type="module">
+const token = location.pathname.split('/').filter(Boolean)[1] || '';
+const state = { data: null };
+
+const $ = (s) => document.querySelector(s);
+const t = (fa, en) => `<span class="fa">${fa}</span><span class="en">${en}</span>`;
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const icon = (n, cls = 'ic') => `<svg class="${cls}"><use href="#i-${n}"/></svg>`;
+
+function setLang(lang) {
+  document.documentElement.dataset.lang = lang;
+  document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
+  $('#lang').textContent = lang === 'fa' ? 'EN' : 'فا';
+  localStorage.setItem('bbg-lang', lang);
+  if (state.data) render();
+}
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  document.querySelectorAll('.t-pick').forEach((b) => b.classList.toggle('active', b.dataset.th === theme));
+  localStorage.setItem('bbg-theme', theme);
+}
+
+function qr(text) {
+  try {
+    const q = qrcode(0, 'M');
+    q.addData(text); q.make();
+    return `<div class="qrbox qr">${q.createSvgTag({ cellSize: 2, margin: 4, scalable: true })}</div>`;
+  } catch { return ''; }
+}
+
+function render() {
+  const d = state.data;
+  const percent = d.quotaGb ? Math.min(100, Math.round((d.usageGb / d.quotaGb) * 100)) : 0;
+  const subUrl = `${location.origin}/sub/${token}`;
+  $('#content').innerHTML = `
+    <div class="cols">
+      <div class="glass-card">
+        <p class="kicker">${icon('users')}${t('وضعیت اشتراک شما', 'YOUR SUBSCRIPTION')}</p>
+        <div class="spread" style="align-items:center">
+          <h2 class="head" style="font-size:26px;margin:0">${esc(d.name)}</h2>
+          <div class="chips">
+            <span class="badge ${d.status === 'active' ? 'ok' : 'bad'}">${esc(d.status)}</span>
+            <span class="chip">${d.links.length} ${t('پروتکل فعال', 'ACTIVE LINKS')}</span>
+          </div>
+        </div>
+        <table class="tbl" style="margin-top:14px">
+          <tbody>
+            <tr><th>${t('مصرف کل', 'USED TRAFFIC')}</th><td class="mono">${d.usageGb} GB</td></tr>
+            <tr><th>${t('سهمیه کل', 'TOTAL QUOTA')}</th><td class="mono">${d.quotaGb ? d.quotaGb + ' GB' : '∞'}</td></tr>
+            <tr><th>${t('تاریخ انقضا', 'EXPIRATION')}</th><td class="mono">${d.expiresAt ? new Date(d.expiresAt).toISOString().slice(0, 10) : '∞'}</td></tr>
+          </tbody>
+        </table>
+        ${d.quotaGb ? `<div class="meter" style="margin-top:12px"><i style="width:${percent}%"></i></div>` : ''}
+        <div class="actions" style="margin-top:16px">
+          <a class="btn primary sm-btn" href="${esc(subUrl)}" target="_blank" rel="noopener">${icon('download', 'ic ic-sm')}${t('لینک اشتراک (Base64)', 'SUBSCRIPTION LINK')}</a>
+          <a class="btn ghost sm-btn" href="${esc(subUrl)}/singbox" target="_blank" rel="noopener"><span class="mono">sing-box JSON</span></a>
+          <a class="btn ghost sm-btn" href="${esc(subUrl)}/xray" target="_blank" rel="noopener"><span class="mono">Xray JSON</span></a>
+          <a class="btn ghost sm-btn" href="${esc(subUrl)}/clash" target="_blank" rel="noopener"><span class="mono">Clash YAML</span></a>
+          <button class="btn ghost sm-btn" id="copy-sub" type="button">${icon('copy', 'ic ic-sm')}${t('کپی آدرس', 'COPY URL')}</button>
+        </div>
+        <p class="hint">${t('آدرس اشتراک را در v2rayNG، Hiddify، sing-box یا Clash Verge وارد کنید تا تمام پروتکل‌های بهینه‌شده خودکار بروزرسانی شوند.', 'Import the subscription URL in v2rayNG, Hiddify, sing-box, or Clash Verge for automatic multi-protocol updates.')}</p>
+      </div>
+
+      <div class="glass-card card-subtle">
+        <p class="kicker">${icon('qr')}${t('اسکن سریع QR', 'QUICK QR IMPORT')}</p>
+        <div class="qr-center">
+          ${qr(subUrl)}
+          <p class="code-line" style="margin-top:10px;font-size:11px;max-width:100%;overflow-wrap:anywhere">${esc(subUrl)}</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="glass-card" style="margin-top:16px">
+      <p class="kicker">${icon('link')}${t('کانفیگ‌های مستقیم (تک‌پروتکل)', 'DIRECT PROTOCOL NODES')}</p>
+      <div class="stack-sm">
+        ${d.links.map((l) => `
+          <div class="link-row">
+            <span class="lk-name">${esc(l.protocol.toUpperCase())} · ${esc(l.transport)} · ${esc(l.core)}</span>
+            <span class="lk-uri" dir="ltr">${esc(l.uri)}</span>
+            <button class="mini" data-copy="${esc(l.uri)}" type="button">${icon('copy', 'ic ic-sm')}</button>
+            <button class="mini" data-qr="${esc(l.uri)}" type="button">${icon('qr', 'ic ic-sm')}</button>
+          </div>`).join('')}
+      </div>
+    </div>
+
+    <div class="glass-card" style="margin-top:16px" id="qr-card" hidden>
+      <p class="kicker">${icon('qr')}QR</p>
+      <div class="qr-center" id="qr-slot"></div>
+    </div>`;
+}
+
+document.addEventListener('click', (e) => {
+  const copyBtn = e.target.closest('[data-copy]');
+  if (copyBtn) { navigator.clipboard?.writeText(copyBtn.dataset.copy); return; }
+  const qrBtn = e.target.closest('[data-qr]');
+  if (qrBtn) {
+    $('#qr-card').hidden = false;
+    $('#qr-slot').innerHTML = qr(qrBtn.dataset.qr);
+    $('#qr-card').scrollIntoView({ behavior: 'smooth' });
+    return;
+  }
+  if (e.target.closest('#copy-sub')) navigator.clipboard?.writeText(location.origin + '/sub/' + token);
+});
+
+setTheme(localStorage.getItem('bbg-theme') || 'dark');
+setLang(localStorage.getItem('bbg-lang') || 'fa');
+$('#lang').addEventListener('click', () => setLang(document.documentElement.dataset.lang === 'fa' ? 'en' : 'fa'));
+document.querySelectorAll('.t-pick').forEach((b) => b.addEventListener('click', () => setTheme(b.dataset.th)));
+
+async function injectSprite() {
+  try {
+    const res = await fetch('/sprite.svg');
+    const text = await res.text();
+    document.body.insertAdjacentHTML('afterbegin', text.replace('<svg ', '<svg hidden aria-hidden="true" '));
+  } catch { /* ignore */ }
+}
+
+await injectSprite();
+fetch(`/u/${token}?json=1`).then((r) => r.json()).then((data) => {
+  if (data.error) throw new Error(data.error);
+  state.data = data;
+  render();
+}).catch((err) => {
+  $('#content').innerHTML = `<div class="glass-card"><div class="err">${esc(err.message)}</div></div>`;
+});
+</script>
+</body>
+</html>
