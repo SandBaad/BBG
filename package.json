@@ -1,0 +1,19 @@
+{
+  "name": "bbg-panel",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "author": "SANDBAAD",
+  "description": "BBG by SANDBAAD — Hardened multi-core (Xray / sing-box) anti-censorship control plane & subscription engine",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "check": "node scripts/preflight.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
