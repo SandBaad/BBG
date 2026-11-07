@@ -88,6 +88,7 @@ export class MtprotoProxy extends EventEmitter {
     ];
     const child = spawn(BIN.mtg, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     this.child = child;
+    this.runningSecret = secret;
     this.status = 'starting';
     this.lastError = '';
     const onData = (buf) => {
@@ -102,6 +103,7 @@ export class MtprotoProxy extends EventEmitter {
       this.emit('status', this.snapshot());
     });
     child.on('exit', (code, signal) => {
+      if (this.child !== child) return;
       this.child = null;
       this.status = this.desired ? 'crashed' : 'stopped';
       this.log(`exited code=${code} signal=${signal || '-'}`);

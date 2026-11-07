@@ -11,6 +11,13 @@ import { ssServerKey, legacySsPassword } from './shared.js';
 import { describeInbound, edgePath, edgeServiceName } from '../catalog.js';
 
 export const XRAY_API_PORT = 10085;
+/** Loopback VLESS inbound that sing-box forwards each user's traffic into, so Xray's per-user stats cover sing-box protocols too. */
+export const ACCOUNTING_PORT = 10087;
+
+const PRIVATE_NETS = [
+  '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
+  '192.0.0.0/24', '192.168.0.0/16', '198.18.0.0/15', '224.0.0.0/4', '::/128', '::1/128', 'fc00::/7', 'fe80::/10',
+];
 
 /** REALITY shortIds must be even-length lowercase hex (max 16 chars). */
 export function normalizeShortIds(raw) {
@@ -60,7 +67,7 @@ function streamSettings(ib, ctx) {
     };
   } else if (ib.transport === 'grpc') {
     stream.grpcSettings = {
-      serviceName: ib.edge === 'http' ? edgeServiceName(ib) : params.serviceName || 'bbg-rpc',
+      serviceName: ib.edge === 'http' ? edgeServiceName(ib) : params.serviceName || ib.routeKey,
       multiMode: true,
       idle_timeout: 60,
       health_check_timeout: 20,
@@ -83,7 +90,7 @@ function streamSettings(ib, ctx) {
   } else if (sec === 'tls-self') {
     stream.security = 'tls';
     stream.tlsSettings = {
-      serverName: params.sni || 'bbg.internal',
+      serverName: params.sni || 'www.apple.com',
       minVersion: '1.2',
       alpn: params.alpn ? String(params.alpn).split(',') : ['h2', 'http/1.1'],
       certificates:
@@ -107,7 +114,6 @@ function buildSettings(ib, users, ctx) {
         id: u.secrets.uuid,
         email: clientEmail(u),
         flow: ib.security === 'reality' && params.flow !== '' ? params.flow || 'xtls-rprx-vision' : '',
-        limitIp: u.ipLimit || 0,
       })),
       decryption: 'none',
       fallbacks: [],
@@ -181,7 +187,7 @@ function inboundObject(ib, users, ctx) {
   return inbound;
 }
 
-export function buildXrayConfig({ doc, reality, certs, sharedSsPassword, serverSecret, logLevel = 'warning' }) {
+export function buildXrayConfig({ doc, reality, certs, sharedSsPassword, serverSecret, logLevel = 'warning', accounting = false }) {
   const inbounds = [];
   const routes = [];
   const users = doc.users || [];
@@ -203,6 +209,20 @@ export function buildXrayConfig({ doc, reality, certs, sharedSsPassword, serverS
       tag: obj.tag,
       serviceName: ib.params.serviceName || '',
       kind: ib.protocol,
+    });
+  }
+
+  if (accounting) {
+    inbounds.push({
+      tag: 'acct-in',
+      listen: '127.0.0.1',
+      port: ACCOUNTING_PORT,
+      protocol: 'vless',
+      settings: {
+        clients: users.filter((u) => effectiveEnabled(u)).map((u) => ({ id: u.secrets.uuid, email: clientEmail(u) })),
+        decryption: 'none',
+      },
+      streamSettings: { network: 'tcp', security: 'none' },
     });
   }
 
@@ -260,23 +280,13 @@ export function buildXrayConfig({ doc, reality, certs, sharedSsPassword, serverS
       { tag: 'block', protocol: 'blackhole', settings: {} },
     ],
     routing: {
-      domainStrategy: 'AsIs',
+      // IPIfNonMatch resolves domains that no domain rule matched, so a client
+      // asking for "localhost" or a name pointing at 10.x is still blocked.
+      domainStrategy: 'IPIfNonMatch',
       rules: [
         { type: 'field', inboundTag: ['api-in'], outboundTag: 'api' },
-        {
-          type: 'field',
-          ip: [
-            '10.0.0.0/8',
-            '172.16.0.0/12',
-            '192.168.0.0/16',
-            '127.0.0.0/8',
-            '169.254.0.0/16',
-            '::1/128',
-            'fc00::/7',
-            'fe80::/10',
-          ],
-          outboundTag: 'block',
-        },
+        { type: 'field', domain: ['full:localhost', 'domain:localhost', 'domain:local', 'domain:internal'], outboundTag: 'block' },
+        { type: 'field', ip: PRIVATE_NETS, outboundTag: 'block' },
       ],
     },
   };

@@ -14,6 +14,7 @@
  *   tier: 'lab'  → for custom CDN domains / experiments.
  *   udp: true    → requires public UDP ingress.
  */
+import crypto from 'node:crypto';
 import { uid } from './store.js';
 
 export const CORES = {
@@ -237,7 +238,7 @@ export const PRESETS = [
       fa: 'مالتی‌پلکسینگ استریم‌های HTTP/2 با پنجرهٔ اتصال بهینه برای پایداری در لینک‌های پرتلفات.',
       en: 'Multiplexed HTTP/2 gRPC streams with tuned keepalive windows for lossy networks.',
     },
-    defaults: { serviceName: 'bbg-rpc' },
+    defaults: { serviceName: '' },
     fields: ['serviceName'],
   },
   {
@@ -302,6 +303,25 @@ export function presetById(id) {
   return PRESET_MAP.get(id) || null;
 }
 
+/** ShortIds shipped in v2.0 presets; identical on every install, so replaced on sight. */
+export const LEGACY_SHORT_IDS = new Set(['a1b2c3d4,9f8e7d6c5b4a', 'a1b2c3d4']);
+
+export function randomShortIds() {
+  return `${crypto.randomBytes(4).toString('hex')},${crypto.randomBytes(8).toString('hex')}`;
+}
+
+/** Per-install values for a preset, so no two panels share paths or IDs. */
+export function freshParams(preset, extra = {}) {
+  const params = { ...preset.defaults, ...extra };
+  if ('shortIds' in params && (!params.shortIds || LEGACY_SHORT_IDS.has(params.shortIds))) params.shortIds = randomShortIds();
+  if (preset.transport === 'grpc' && (!params.serviceName || params.serviceName === 'bbg-rpc')) params.serviceName = uid(8);
+  return params;
+}
+
+export function newRouteKey() {
+  return uid(10);
+}
+
 function makeInbound(preset, overrides = {}) {
   const id = overrides.id || uid(6);
   return {
@@ -309,9 +329,9 @@ function makeInbound(preset, overrides = {}) {
     presetId: preset.id,
     label: overrides.label || preset.title.en,
     enabled: overrides.enabled !== false,
-    routeKey: `bbg-${id}`,
+    routeKey: newRouteKey(),
     port: overrides.port || 0,
-    params: { ...preset.defaults, ...(overrides.params || {}) },
+    params: freshParams(preset, overrides.params || {}),
   };
 }
 

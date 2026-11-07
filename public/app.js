@@ -1,1107 +1,512 @@
 /**
- * BBG · Multi-Core Anti-Censorship & Subscription Control Plane
- * Author / Maintainer: SANDBAAD
- * Modern Glassmorphic UI, Bento Analytics Studio & V5 Capsule Navigation.
+ * BBG · SANDBAAD — admin panel UI (server + Cloudflare Worker editions).
+ * Plain ES module, no build step. Every number shown comes from the API.
  */
 
+const BASE = (document.querySelector('meta[name="panel-base"]')?.content || '').replace(/\/+$/, '');
 const S = {
-  state: null,
   boot: null,
-  tab: 'dashboard',
-  dashFilter: 'all',
-  searchQuery: '',
-  editing: null,      // inbound id being edited
-  logSource: 'xray',
-  logTimer: null,
-  refreshTimer: null,
-  update: null,       // last /api/update answer
-  updateBusy: false,
-  updateTimer: null,
+  state: null,
+  page: 'overview',
+  lang: 'fa',
+  theme: 'dark',
   busy: false,
+  filter: '',
+  status: 'all',
+  deliveryUser: '',
+  linksUser: '',
+  linksFormat: 'base64',
+  logSource: 'xray',
+  easy: null,
+  scan: null,
+  update: null,
+  timers: {},
 };
+const FEATURES_ALL = { telegram: true, cores: true, scanner: true, easy: true, raw: true, update: true, logs: true, probe: true, ping: true };
 
-/* ── Tiny Helpers ──────────────────────────────────────────────────────── */
+/* ── helpers ────────────────────────────────────────────────────────── */
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
-const t = (fa, en) => `<span class="fa">${fa}</span><span class="en">${en}</span>`;
-const tt = (fa, en) => (document.documentElement.lang === 'en' ? en : fa);
+const L = (fa, en) => (S.lang === 'en' ? en : fa);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const icon = (name, cls = 'ic') => `<svg class="${cls}"><use href="#i-${name}"/></svg>`;
+/** Numbers with Latin units ("42 GB", "3h 17m", "120 ms") keep their order inside Persian text. */
+const nb = (text) => `<span class="ltr num">${esc(text)}</span>`;
+const icon = (name, cls = 'ic') => `<svg class="${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+const feat = (k) => ({ ...FEATURES_ALL, ...(S.state?.features || {}) })[k] !== false;
+const isWorker = () => S.state?.edition === 'worker' || S.boot?.edition === 'worker';
+const GB = 1024 ** 3;
 
-function fmtBytes(bytes) {
-  const n = Number(bytes) || 0;
-  if (n < 1024) return `${n} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = n / 1024;
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return `${v} B`;
+  const u = ['KB', 'MB', 'GB', 'TB'];
+  let x = v / 1024;
   let i = 0;
-  while (value >= 1024 && i < units.length - 1) {
-    value /= 1024;
-    i += 1;
-  }
-  return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${units[i]}`;
+  while (x >= 1024 && i < u.length - 1) { x /= 1024; i += 1; }
+  return `${x.toFixed(x >= 100 ? 0 : x >= 10 ? 1 : 2)} ${u[i]}`;
 }
-
 function fmtDate(ms) {
   if (!ms) return '—';
-  return new Date(ms).toISOString().slice(0, 10);
+  return new Date(ms).toLocaleDateString(S.lang === 'en' ? 'en-GB' : 'fa-IR-u-nu-latn', { year: 'numeric', month: 'short', day: 'numeric' });
 }
-
+function relTime(ms) {
+  if (!ms) return L('هرگز', 'never');
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return L('همین حالا', 'just now');
+  if (s < 3600) return L(`${Math.floor(s / 60)} دقیقه پیش`, `${Math.floor(s / 60)} min ago`);
+  if (s < 86400) return L(`${Math.floor(s / 3600)} ساعت پیش`, `${Math.floor(s / 3600)} h ago`);
+  return L(`${Math.floor(s / 86400)} روز پیش`, `${Math.floor(s / 86400)} d ago`);
+}
 function fmtUptime(ms) {
   if (!ms || ms < 0) return '—';
   const s = Math.floor(ms / 1000);
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
-  if (d) return `${d}d ${h}h`;
-  if (h) return `${h}h ${m}m`;
-  return `${m}m ${s % 60}s`;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
 }
-
-function relTime(ms) {
-  if (!ms) return '—';
-  const diff = Date.now() - ms;
-  if (diff < 60000) return `${Math.max(1, Math.floor(diff / 1000))}s`;
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h`;
-  return `${Math.floor(diff / 86400000)}d`;
+function daysLeft(ms) {
+  if (!ms) return null;
+  return Math.ceil((ms - Date.now()) / 864e5);
 }
 
 function toast(message, kind = 'ok') {
   const el = $('#toast');
-  if (!el) return;
-  el.hidden = false;
-  el.textContent = String(message).replace(/<[^>]+>/g, '');
+  el.textContent = message;
   el.className = `toast ${kind}`;
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => { el.hidden = true; }, 3200);
+  el.hidden = false;
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => { el.hidden = true; }, 3400);
 }
 
 async function api(path, { method = 'GET', body } = {}) {
-  const res = await fetch(path, {
+  const res = await fetch(BASE + path, {
     method,
-    headers: body ? { 'content-type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    headers: { 'x-requested-with': 'bbg', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: 'same-origin',
   });
   let data = null;
   try { data = await res.json(); } catch { data = null; }
   if (!res.ok) {
-    const message = (data && (data.error || data.message)) || `HTTP ${res.status}`;
-    const error = new Error(message);
-    error.status = res.status;
-    throw error;
+    const err = new Error((data && (data.error || data.message)) || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return data;
 }
 
 function copyText(text) {
-  navigator.clipboard?.writeText(text).then(
-    () => toast(tt('کپی شد', 'Copied to clipboard'), 'ok'),
-    () => toast(tt('خطا در کپی', 'Copy failed'), 'warn'),
-  );
+  const done = () => toast(L('کپی شد', 'Copied'));
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+  } else fallbackCopy(text, done);
+}
+function fallbackCopy(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.append(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch { toast(L('کپی نشد؛ متن را دستی انتخاب کنید', 'Copy failed; select the text manually'), 'warn'); }
+  ta.remove();
 }
 
-function qrInto(el, text) {
-  if (!el || !text) return;
+function qrSvg(text) {
   try {
-    const qr = qrcode(0, 'M');
+    const qr = window.qrcode(0, 'M');
     qr.addData(text);
     qr.make();
-    el.innerHTML = qr.createSvgTag({ cellSize: 2, margin: 4, scalable: true });
+    return qr.createSvgTag({ cellSize: 3, margin: 0, scalable: true });
   } catch {
-    el.textContent = 'QR error';
+    return `<span class="small muted">${L('متن برای QR طولانی است', 'Too long for a QR code')}</span>`;
   }
 }
 
-/* ── Theme & Language ──────────────────────────────────────────────────── */
+function copyLine(value, { qr = false, label = '' } = {}) {
+  return `<div class="copy-line">${label ? `<span class="small muted nowrap">${esc(label)}</span>` : ''}<code title="${esc(value)}">${esc(value)}</code>
+    ${qr ? `<button class="btn ghost sm icon" type="button" data-act="qr" data-arg="${esc(value)}" aria-label="QR">${icon('qr', 'ic ic-sm')}</button>` : ''}
+    <button class="btn ghost sm icon" type="button" data-act="copy" data-arg="${esc(value)}" aria-label="${L('کپی', 'Copy')}">${icon('copy', 'ic ic-sm')}</button></div>`;
+}
 
-const LANG_KEY = 'bbg-lang';
-const THEME_KEY = 'bbg-theme';
+function pill(kind, text) {
+  return `<span class="pill ${kind}">${esc(text)}</span>`;
+}
+function userPill(u) {
+  return {
+    active: pill('ok', L('فعال', 'Active')),
+    disabled: pill('mute', L('غیرفعال', 'Disabled')),
+    expired: pill('bad', L('منقضی', 'Expired')),
+    quota: pill('warn', L('حجم تمام', 'Out of data')),
+  }[u.status] || pill('mute', u.status);
+}
+function corePill(status) {
+  const map = {
+    running: ['ok', L('در حال اجرا', 'Running')],
+    starting: ['info', L('در حال شروع', 'Starting')],
+    stopped: ['mute', L('متوقف', 'Stopped')],
+    missing: ['bad', L('نصب نیست', 'Not installed')],
+    invalid: ['bad', L('کانفیگ نامعتبر', 'Invalid config')],
+    crashed: ['bad', L('از کار افتاده', 'Crashed')],
+    error: ['bad', L('خطا', 'Error')],
+  };
+  const [k, t] = map[status] || ['mute', status || '—'];
+  return pill(k, t);
+}
+function sw(act, checked, arg = '', label = '') {
+  return `<label class="switch" title="${esc(label)}"><input type="checkbox" data-act="${act}" data-arg="${esc(arg)}" ${checked ? 'checked' : ''} aria-label="${esc(label)}"><span class="knob"></span></label>`;
+}
+
+/* ── theme & language ───────────────────────────────────────────────── */
 
 function applyLang(lang) {
-  document.documentElement.dataset.lang = lang;
-  document.documentElement.lang = lang;
-  document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
-  $('#btn-lang') && ($('#btn-lang').textContent = lang === 'fa' ? 'EN' : 'فا');
-  $('#auth-lang') && ($('#auth-lang').textContent = lang === 'fa' ? 'EN' : 'فا');
-  const searchInput = $('#global-search');
-  if (searchInput) {
-    searchInput.placeholder = lang === 'fa'
-      ? 'جستجوی کاربران، پروتکل‌ها، مسیرها یا تنظیمات...'
-      : 'Search subscribers, protocols, routes, or settings...';
-  }
-  localStorage.setItem(LANG_KEY, lang);
+  S.lang = lang === 'en' ? 'en' : 'fa';
+  document.documentElement.lang = S.lang;
+  document.documentElement.dir = S.lang === 'fa' ? 'rtl' : 'ltr';
+  try { localStorage.setItem('bbg-lang', S.lang); } catch { /* ignore */ }
 }
-
 function applyTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  $$('.t-pick').forEach((b) => b.classList.toggle('active', b.dataset.th === theme));
-  localStorage.setItem(THEME_KEY, theme);
+  S.theme = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = S.theme;
+  try { localStorage.setItem('bbg-theme', S.theme); } catch { /* ignore */ }
 }
 
-/* ── Status Bar & Dual Navigation (Sidebar + V5 Capsule) ───────────────── */
+/* ── navigation ─────────────────────────────────────────────────────── */
 
-function coreBadge(status) {
-  const map = {
-    running: ['ok', t('در حال اجرا', 'RUNNING')],
-    starting: ['ok', t('راه‌اندازی', 'STARTING')],
-    stopped: ['bad', t('خاموش', 'STOPPED')],
-    crashed: ['bad', t('کرش', 'CRASHED')],
-    invalid: ['bad', t('کانفیگ نامعتبر', 'INVALID')],
-    missing: ['bad', t('باینری نیست', 'NO BINARY')],
-    error: ['bad', t('خطا', 'ERROR')],
-  };
-  const [cls, label] = map[status] || ['bad', esc(status)];
-  return `<span class="badge ${cls}">${label}</span>`;
-}
-
-function renderStatusBar() {
-  const st = S.state;
-  if (!st) return;
-  const cells = [
-    ['XRAY-CORE', st.cores.xray.status, st.cores.xray.status === 'running'],
-    ['SING-BOX', st.cores.singbox.status, st.cores.singbox.status === 'running'],
-    ['MTPROTO', st.cores.mtproto.status, st.cores.mtproto.status === 'running'],
-    [t('پروکسی TCP', 'TCP MUX'), st.facts.tcpReady ? `${st.facts.tcpHost}:${st.facts.tcpPort}` : 'OFF', st.facts.tcpReady],
-    [t('دامنهٔ لبه', 'EDGE HOST'), st.facts.publicHost || 'OFF', Boolean(st.facts.publicHost)],
-  ];
-  const valueHtml = (raw) => {
-    const m = /^([^:\s]+)(:\d+)$/.exec(String(raw || ''));
-    if (m) return `${esc(m[1])}<span class="nw">${esc(m[2])}</span>`;
-    return esc(String(raw || '—'));
-  };
-  const ledgerEl = $('#ledger-items');
-  if (ledgerEl) {
-    ledgerEl.innerHTML = cells.map(([label, value, ok]) => `
-      <div class="s-cell ${ok ? 'on' : 'off'}${String(value || '').length > 18 ? ' wide' : ''}">
-        <span class="s-dot"></span>
-        <span class="s-label">${label}</span>
-        <span class="s-value" dir="ltr" title="${esc(String(value || ''))}">${valueHtml(value)}</span>
-      </div>`).join('');
-  }
-  $('#top-region') && ($('#top-region').textContent = `BBG · ${(st.facts.region || 'EDGE').toUpperCase()}`);
-  $('#edition') && ($('#edition').textContent = `BBG V${st.app.version} · SANDBAAD`);
-  $('#mode-pill') && ($('#mode-pill').textContent = `BBG · V${st.app.version}`);
-
-  // Update sidebar subscriber capacity bar
-  const maxU = st.limits?.maxUsers || 50;
-  const curU = (st.users || []).length;
-  const capPct = Math.min(100, Math.round((curU / Math.max(1, maxU)) * 100));
-  $('#side-cap-label') && ($('#side-cap-label').textContent = `${curU}/${maxU}`);
-  $('#side-cap-bar') && ($('#side-cap-bar').style.width = `${Math.max(6, capPct)}%`);
-
-  const ticks = [
-    'BBG CONTROL PLANE · BY SANDBAAD',
-    'XRAY 25 + SING-BOX 1.12 DUAL CORE',
-    'REALITY · XHTTP PADDING · 0-RTT WS · ANYTLS',
-    'TLS RECORD FRAGMENTATION & UTLS CHROME',
-    'SINGLE-PORT TCP SNI MULTIPLEXER',
-    'TUNNEL-ROUTED DOH & ZERO-STALL TELEGRAM',
-  ];
-  const tickerEl = $('#ticker-track');
-  if (tickerEl) {
-    tickerEl.innerHTML = [...ticks, ...ticks].map((x) => `<span>${x}</span>`).join('');
-  }
-}
-
-const TABS = [
-  { id: 'dashboard', group: 'mgmt', icon: 'gauge', fa: 'نمای کلی', en: 'Overview' },
-  { id: 'easy', group: 'mgmt', icon: 'bolt', fa: 'تنظیم هوشمند', en: 'Quick Tune' },
-  { id: 'railynx', group: 'mgmt', icon: 'radar', fa: 'اسکنر آی‌پی', en: 'EdgeScan' },
-  { id: 'inbounds', group: 'net', icon: 'layers', fa: 'پروتکل‌ها', en: 'Protocols' },
-  { id: 'cores', group: 'net', icon: 'cpu', fa: 'هسته‌ها', en: 'Cores & Logs' },
-  { id: 'telegram', group: 'net', icon: 'telegram', fa: 'تلگرام', en: 'Telegram Mux' },
-  { id: 'users', group: 'subs', icon: 'users', fa: 'مشترکین', en: 'Subscribers' },
-  { id: 'delivery', group: 'subs', icon: 'send', fa: 'لینک و اشتراک', en: 'Subscriptions' },
-  { id: 'settings', group: 'sys', icon: 'sliders', fa: 'تنظیمات', en: 'Settings' },
+const PAGES = [
+  { id: 'overview', group: 'main', icon: 'gauge', fa: 'نمای کلی', en: 'Overview' },
+  { id: 'users', group: 'main', icon: 'users', fa: 'مشترکین', en: 'Subscribers', count: (st) => st.users.length },
+  { id: 'protocols', group: 'main', icon: 'layers', fa: 'پروتکل‌ها', en: 'Protocols', count: (st) => st.inbounds.filter((i) => i.enabled).length },
+  { id: 'delivery', group: 'main', icon: 'send', fa: 'اشتراک و کلاینت‌ها', en: 'Subscriptions' },
+  { id: 'easy', group: 'tools', feature: 'easy', icon: 'bolt', fa: 'تنظیم سریع', en: 'Quick setup' },
+  { id: 'telegram', group: 'tools', feature: 'telegram', icon: 'telegram', fa: 'پروکسی تلگرام', en: 'Telegram proxy' },
+  { id: 'scanner', group: 'tools', feature: 'scanner', icon: 'radar', fa: 'اسکنر IP تمیز', en: 'Clean-IP scanner' },
+  { id: 'cores', group: 'tools', feature: 'cores', icon: 'cpu', fa: 'هسته‌ها و لاگ', en: 'Cores & logs' },
+  { id: 'settings', group: 'system', icon: 'sliders', fa: 'تنظیمات', en: 'Settings' },
 ];
+const GROUPS = { main: ['مدیریت', 'Manage'], tools: ['ابزارها', 'Tools'], system: ['سیستم', 'System'] };
+const visiblePages = () => PAGES.filter((p) => !p.feature || feat(p.feature));
 
-const SIDEBAR_GROUPS = [
-  { id: 'mgmt', fa: 'مدیریت', en: 'MANAGEMENT' },
-  { id: 'net', fa: 'شبکه و هسته‌ها', en: 'NETWORK & CORES' },
-  { id: 'subs', fa: 'مشترکین', en: 'SUBSCRIBERS' },
-  { id: 'sys', fa: 'سیستم', en: 'SYSTEM' },
-];
+function navItem(p) {
+  const n = p.count && S.state ? p.count(S.state) : null;
+  return `<button class="nav-item" type="button" data-act="page" data-arg="${p.id}" ${S.page === p.id ? 'aria-current="page"' : ''}>
+    ${icon(p.icon)}<span>${L(p.fa, p.en)}</span>${n !== null ? `<span class="count">${n}</span>` : ''}</button>`;
+}
 
-function renderNav() {
+function renderChrome() {
+  const pages = visiblePages();
+  let html = '';
+  for (const g of Object.keys(GROUPS)) {
+    const items = pages.filter((p) => p.group === g);
+    if (!items.length) continue;
+    html += `<div class="nav-group">${L(...GROUPS[g])}</div>${items.map(navItem).join('')}`;
+  }
+  $('#nav').innerHTML = html;
+  const strip = $('#tabstrip');
+  const keep = strip.scrollLeft;
+  strip.innerHTML = pages.map(navItem).join('');
+  strip.scrollLeft = keep;
+  const cur = strip.querySelector('[aria-current="page"]');
+  if (cur && strip.clientWidth) {
+    // Keep the active tab visible on phones (works for RTL and LTR scroll origins).
+    const s = strip.getBoundingClientRect();
+    const c = cur.getBoundingClientRect();
+    if (c.left < s.left + 8) strip.scrollLeft -= s.left + 24 - c.left;
+    else if (c.right > s.right - 8) strip.scrollLeft += c.right - s.right + 24;
+  }
+  const page = PAGES.find((p) => p.id === S.page) || PAGES[0];
+  $('#page-title').textContent = L(page.fa, page.en);
+  $('#crumb').textContent = isWorker() ? L('نسخهٔ Cloudflare Worker', 'Cloudflare Worker edition') : L('نسخهٔ سرور', 'Server edition');
+  $('#brand-sub').textContent = `BY SANDBAAD · ${isWorker() ? 'EDGE' : 'CORE'}`;
   const st = S.state;
-  if (!st) return;
-  const counts = {
-    inbounds: st.inbounds.filter((i) => i.enabled).length,
-    users: st.users.length,
-    telegram: [st.telegram.mtproto.enabled, st.telegram.socks.enabled, st.telegram.http.enabled].filter(Boolean).length,
-  };
-
-  // 1. Categorized Left Sidebar (Screenshot 1 & 2)
-  const sideEl = $('#sidebar-nav');
-  if (sideEl) {
-    sideEl.innerHTML = SIDEBAR_GROUPS.map((grp) => {
-      const items = TABS.filter((tab) => tab.group === grp.id);
-      return `
-        <div class="side-group-label">${t(grp.fa, grp.en)}</div>
-        ${items.map((tab) => `
-          <button class="side-btn ${S.tab === tab.id ? 'active' : ''}" data-act="tab" data-arg="${tab.id}" type="button">
-            ${icon(tab.icon, 'ic')}
-            <span>${t(tab.fa, tab.en)}</span>
-            ${counts[tab.id] !== undefined ? `<span class="tnum">${counts[tab.id]}</span>` : ''}
-          </button>
-        `).join('')}
-      `;
-    }).join('');
-  }
-
-  // 2. Glassy Navigation Tabs V5 Floating Capsule (Screenshot 3)
-  const navEl = $('#nav');
-  if (navEl) {
-    navEl.innerHTML = TABS.map((tab) => `
-      <button class="tab-btn ${S.tab === tab.id ? 'active' : ''}" data-act="tab" data-arg="${tab.id}" type="button">
-        <span class="tab-lbl">${icon(tab.icon, 'ic')}${t(tab.fa, tab.en)}</span>
-        ${counts[tab.id] !== undefined ? `<span class="tnum">${counts[tab.id]}</span>` : ''}
-      </button>`).join('');
-  }
+  $('#rail-foot').innerHTML = st
+    ? `<span>${L('نسخه', 'Version')} <span class="mono">${esc(st.app.version)}</span></span><span class="ltr mono small">${esc(st.facts.publicHost || '')}</span>`
+    : '';
+  $('#top-actions').innerHTML = `
+    ${!isWorker() ? `<button class="btn primary sm" type="button" data-act="apply">${icon('refresh', 'ic ic-sm')}<span class="hide-sm">${L('اعمال تنظیمات', 'Apply config')}</span></button>` : ''}
+    <button class="btn ghost sm icon" type="button" data-act="theme" aria-label="${L('تغییر پوسته', 'Toggle theme')}">${icon(S.theme === 'dark' ? 'sun' : 'moon', 'ic ic-sm')}</button>
+    <button class="btn ghost sm" type="button" data-act="lang">${S.lang === 'fa' ? 'EN' : 'FA'}</button>
+    <button class="btn ghost sm icon" type="button" data-act="logout" aria-label="${L('خروج', 'Sign out')}">${icon('power', 'ic ic-sm')}</button>`;
 }
 
-function switchTab(id) {
-  S.tab = id;
-  S.editing = null;
-  $$('.tab-pane').forEach((pane) => { pane.hidden = pane.dataset.pane !== id; });
-  renderNav();
-  renderPane(id);
-  if (id === 'easy') { loadEasy().then(() => { if (S.tab === 'easy') renderEasy(); }).catch(() => {}); }
-  if (id === 'railynx') { railynxPoll(); }
-  if (id !== 'railynx') stopRailynxPolling();
-  if (id === 'cores') startLogPolling(); else stopLogPolling();
-  if (id === 'dashboard' || id === 'cores') refreshLogs();
+function go(page) {
+  if (!visiblePages().some((p) => p.id === page)) page = 'overview';
+  S.page = page;
+  try { history.replaceState(null, '', `#${page}`); } catch { /* ignore */ }
+  stopTimers();
+  render();
+  window.scrollTo({ top: 0 });
+  if (page === 'easy') loadEasy();
+  if (page === 'cores') S.timers.logs = setInterval(refreshLogs, 4000);
+  if (page === 'scanner') loadScan();
+  if (page === 'settings' && feat('update') && !S.update) checkUpdate(false);
+}
+function stopTimers() {
+  clearInterval(S.timers.logs);
+  clearInterval(S.timers.scan);
 }
 
-/* ── Bento Dashboard & Cubic-Bezier Traffic Studio (Screenshot 1 & 2) ──── */
-
-function smoothCubicPath(points, width = 600, height = 160, padY = 16) {
-  if (!points.length) {
-    const mid = height / 2;
-    return {
-      line: `M 0 ${mid} L ${width} ${mid}`,
-      area: `M 0 ${mid} L ${width} ${mid} L ${width} ${height} L 0 ${height} Z`,
-    };
-  }
-  const vals = points.map((p) => (p.up || 0) + (p.down || 0) + (p.tg || 0));
-  const max = Math.max(1024, ...vals);
-  const step = points.length > 1 ? width / (points.length - 1) : width;
-  const coords = vals.map((v, i) => ({
-    x: i * step,
-    y: height - padY - (v / max) * (height - padY * 2),
-  }));
-  if (coords.length === 1) {
-    coords.push({ x: width, y: coords[0].y });
-  }
-  let d = `M ${coords[0].x.toFixed(1)} ${coords[0].y.toFixed(1)}`;
-  for (let i = 0; i < coords.length - 1; i += 1) {
-    const p0 = coords[i];
-    const p1 = coords[i + 1];
-    const cx = ((p0.x + p1.x) / 2).toFixed(1);
-    d += ` C ${cx} ${p0.y.toFixed(1)}, ${cx} ${p1.y.toFixed(1)}, ${p1.x.toFixed(1)} ${p1.y.toFixed(1)}`;
-  }
-  const area = `${d} L ${width} ${height} L 0 ${height} Z`;
-  return { line: d, area };
+function render() {
+  if (!S.state) return;
+  renderChrome();
+  const fn = {
+    overview: renderOverview, users: renderUsers, protocols: renderProtocols, delivery: renderDelivery,
+    easy: renderEasy, telegram: renderTelegram, scanner: renderScanner, cores: renderCores, settings: renderSettings,
+  }[S.page] || renderOverview;
+  S.dirty = false;
+  $('#content').innerHTML = fn();
+  if (S.page === 'cores') refreshLogs();
 }
 
-function miniSparkSvg(color = '#2dd4bf', seed = 1) {
-  const pts = [18, 12, 20, 9, 15, 6, 11, 4].map((y, i) => `${i * 9.5},${Math.max(3, (y + ((seed * (i + 2)) % 7)) % 26)}`);
-  return `<svg class="studio-mini-spark" viewBox="0 0 68 28" fill="none">
-    <polyline points="${pts.join(' ')}" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  </svg>`;
-}
+/* ── overview ───────────────────────────────────────────────────────── */
 
-function renderDashboard() {
-  const st = S.state;
-  const activeUsers = st.users.filter((u) => u.status === 'active').length;
-  const totalUp = st.users.reduce((sum, u) => sum + u.usage.up, 0);
-  const totalDown = st.users.reduce((sum, u) => sum + u.usage.down, 0);
-  const mux = st.cores.mux;
-  const tgTraffic = (mux.up || 0) + (mux.down || 0);
-  const totalBandwidth = totalUp + totalDown + tgTraffic;
-  const uptime = Date.now() - st.cores.bootedAt;
-
-  const enabledInbounds = st.inbounds.filter((i) => i.enabled);
-  const xrayCount = enabledInbounds.filter((i) => i.core === 'xray').length;
-  const sbCount = enabledInbounds.filter((i) => i.core === 'singbox').length;
-  const tgCount = [st.telegram.mtproto.enabled, st.telegram.socks.enabled, st.telegram.http.enabled].filter(Boolean).length;
-
-  // Build smooth cubic-bezier chart
-  const samples = (st.traffic || []).slice(-36);
-  const chart = smoothCubicPath(samples, 620, 170, 18);
-
-  // Donut health & capacity calculation
-  const coresUp = [st.cores.xray.status === 'running', st.cores.singbox.status === 'running'].filter(Boolean).length;
-  const healthPct = Math.min(100, Math.round(((enabledInbounds.length > 0 ? 60 : 20) + (coresUp * 20))));
-  const r = 38;
-  const circum = 2 * Math.PI * r;
-  const dashOffset = circum - (healthPct / 100) * circum;
-
-  // 24-bar live histogram for Live Mux Store card
-  const barSeeds = Array.from({ length: 24 }, (_, idx) => {
-    const sample = samples[samples.length - 24 + idx];
-    if (sample) {
-      const v = (sample.up || 0) + (sample.down || 0) + (sample.tg || 0);
-      return Math.max(12, Math.min(100, Math.round(Math.log10(v + 10) * 18)));
+function trafficSeries(st) {
+  const raw = st.traffic || [];
+  if (st.trafficUnit === 'hour') {
+    const hour = 3_600_000;
+    const now = Math.floor(Date.now() / hour) * hour;
+    const map = new Map(raw.map((b) => [b.t, b]));
+    const pts = [];
+    for (let i = 23; i >= 0; i -= 1) {
+      const t = now - i * hour;
+      const b = map.get(t) || { up: 0, down: 0 };
+      pts.push({ t, up: b.up, down: b.down });
     }
-    return 16 + ((idx * 17 + (mux.total || 3) * 11) % 68);
-  });
-
-  // Filtered inbounds preview based on Pill Tabs
-  const filteredInbounds = enabledInbounds.filter((ib) => {
-    if (S.dashFilter === 'xray') return ib.core === 'xray';
-    if (S.dashFilter === 'singbox') return ib.core === 'singbox';
-    return true;
-  });
-
-  $('#pane-dashboard').innerHTML = `
-    ${updateBannerHtml()}
-
-    <!-- Pill Filter Bar (Screenshot 1) -->
-    <div class="pill-tabs">
-      <button class="pill-tab ${S.dashFilter === 'all' ? 'active' : ''}" data-act="dash-filter" data-arg="all" type="button">
-        ${t('همهٔ مسیرها', 'All Transports')} <span class="count">${enabledInbounds.length + tgCount}</span>
-      </button>
-      <button class="pill-tab ${S.dashFilter === 'xray' ? 'active' : ''}" data-act="dash-filter" data-arg="xray" type="button">
-        Xray-core <span class="count">${xrayCount}</span>
-      </button>
-      <button class="pill-tab ${S.dashFilter === 'singbox' ? 'active' : ''}" data-act="dash-filter" data-arg="singbox" type="button">
-        sing-box 1.12 <span class="count">${sbCount}</span>
-      </button>
-      <button class="pill-tab" data-act="tab" data-arg="inbounds" type="button" style="margin-inline-start:auto">
-        ${icon('plus', 'ic ic-sm')}${t('مدیریت پروتکل‌ها', 'Manage Protocols')}
-      </button>
-    </div>
-
-    <!-- Bento Dashboard Studio (Screenshot 2) -->
-    <div class="bento-grid">
-      <div class="bento-studio">
-        <div class="studio-kpis">
-          <div class="studio-kpi">
-            <div class="studio-kpi-info">
-              <p class="studio-kpi-lbl">${t('ترافیک کل شبکه', 'Total Edge Traffic')}</p>
-              <div class="studio-kpi-val">${fmtBytes(totalBandwidth)}</div>
-              <span class="studio-kpi-delta">↑ ${fmtBytes(totalUp)} · ↓ ${fmtBytes(totalDown)}</span>
-            </div>
-            ${miniSparkSvg('#2dd4bf', 1)}
-          </div>
-          <div class="studio-kpi">
-            <div class="studio-kpi-info">
-              <p class="studio-kpi-lbl">${t('مشترکین فعال', 'Active Subscribers')}</p>
-              <div class="studio-kpi-val">${activeUsers} / ${st.users.length}</div>
-              <span class="studio-kpi-delta">● ${t('آمادهٔ اتصال', '0-RTT Ready')}</span>
-            </div>
-            ${miniSparkSvg('#38bdf8', 3)}
-          </div>
-          <div class="studio-kpi">
-            <div class="studio-kpi-info">
-              <p class="studio-kpi-lbl">${t('پروتکل‌های مقاوم فعال', 'Hardened Inbounds')}</p>
-              <div class="studio-kpi-val">${enabledInbounds.length}</div>
-              <span class="studio-kpi-delta">+${tgCount} ${t('پروکسی تلگرام', 'TG Mux')}</span>
-            </div>
-            ${miniSparkSvg('#10b981', 5)}
-          </div>
-        </div>
-
-        <div class="studio-head">
-          <div>
-            <div class="studio-title">${icon('chart', 'ic')}${t('استودیو ترافیک و توان عبوری', 'BBG Telemetry & Traffic Studio')}</div>
-            <div class="studio-sub">${t(
-              `آپ‌تایم: ${fmtUptime(uptime)} · نمونه برداری زنده از هسته‌های Xray و مالتی‌پلکسر TCP`,
-              `Uptime: ${fmtUptime(uptime)} · Live telemetry across Xray-core, sing-box & single-port TCP multiplexer`,
-            )}</div>
-          </div>
-          <div class="studio-pills">
-            <span class="studio-pill active">LIVE</span>
-            <span class="studio-pill">${samples.length} PTS</span>
-            <span class="studio-pill">${(st.facts.region || 'EDGE').toUpperCase()}</span>
-          </div>
-        </div>
-
-        <div class="studio-chart-wrap">
-          <svg class="studio-svg" viewBox="0 0 620 170" preserveAspectRatio="none">
-            <defs>
-              <linearGradient id="bbgAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.38"/>
-                <stop offset="65%" stop-color="#2dd4bf" stop-opacity="0.10"/>
-                <stop offset="100%" stop-color="#0f172a" stop-opacity="0.0"/>
-              </linearGradient>
-              <linearGradient id="bbgLineGrad" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stop-color="#2dd4bf"/>
-                <stop offset="50%" stop-color="#38bdf8"/>
-                <stop offset="100%" stop-color="#818cf8"/>
-              </linearGradient>
-            </defs>
-            <line x1="0" y1="35" x2="620" y2="35" stroke="rgba(148,163,184,0.10)" stroke-dasharray="4 4"/>
-            <line x1="0" y1="85" x2="620" y2="85" stroke="rgba(148,163,184,0.10)" stroke-dasharray="4 4"/>
-            <line x1="0" y1="135" x2="620" y2="135" stroke="rgba(148,163,184,0.10)" stroke-dasharray="4 4"/>
-            <path d="${chart.area}" fill="url(#bbgAreaGrad)"/>
-            <path d="${chart.line}" fill="none" stroke="url(#bbgLineGrad)" stroke-width="2.6" stroke-linecap="round"/>
-          </svg>
-        </div>
-      </div>
-
-      <div class="bento-side">
-        <!-- Circular Donut Goal / Health Card -->
-        <div class="bento-goal-card">
-          <div class="spread">
-            <p class="kicker" style="margin:0">${icon('shield')}${t('سلامت و ظرفیت سیستم', 'SYSTEM HEALTH & QUOTA')}</p>
-            <span class="chip ok">TLS FRAGMENT ON</span>
-          </div>
-          <div class="donut-row">
-            <div class="donut-wrap">
-              <svg class="donut-svg" viewBox="0 0 96 96">
-                <circle cx="48" cy="48" r="${r}" stroke="rgba(148,163,184,0.14)" stroke-width="8" fill="none"/>
-                <circle cx="48" cy="48" r="${r}" stroke="url(#bbgLineGrad)" stroke-width="8" fill="none"
-                  stroke-linecap="round" stroke-dasharray="${circum.toFixed(1)}" stroke-dashoffset="${dashOffset.toFixed(1)}"/>
-              </svg>
-              <div class="donut-center">
-                <span class="donut-pct">${healthPct}%</span>
-                <span class="donut-lbl">HEALTH</span>
-              </div>
-            </div>
-            <div class="donut-facts">
-              <div class="donut-fact"><span>${t('هستهٔ Xray', 'Xray-core')}</span><b>${st.cores.xray.status.toUpperCase()}</b></div>
-              <div class="donut-fact"><span>${t('هستهٔ sing-box', 'sing-box')}</span><b>${st.cores.singbox.status.toUpperCase()}</b></div>
-              <div class="donut-fact"><span>${t('ترافیک تلگرام', 'TG Egress')}</span><b>${fmtBytes(tgTraffic)}</b></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Live Mux Store Card -->
-        <div class="bento-live-card">
-          <div class="live-head">
-            <span class="live-indicator"><span class="live-dot"></span>${t('مالتی‌پلکسر زنده', 'Live Multiplexer')}</span>
-            <span class="mono muted" style="font-size:11px">:${st.facts.muxPort}</span>
-          </div>
-          <div class="live-big">
-            <strong>${mux.active || 0}</strong>
-            <span>${t(`اتصال هم‌زمان (${mux.total || 0} کل نشست‌ها)`, `active streams (${mux.total || 0} total sessions)`)}</span>
-          </div>
-          <div class="live-bars">
-            ${barSeeds.map((h) => `<span class="live-bar" style="height:${h}%"></span>`).join('')}
-          </div>
-          <div class="live-meta">
-            <span>TLS/REALITY: <b class="mono">${mux.tls || 0}</b></span>
-            <span>MTProto: <b class="mono">${mux.mtproto || 0}</b></span>
-            <span>SOCKS/HTTP: <b class="mono">${(mux.socks || 0) + ((st.cores.http && st.cores.http.conns) || 0)}</b></span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Active Hardened Transports Strip (Screenshot 1 Cards) -->
-    <div class="card" style="margin-bottom:18px">
-      <div class="spread" style="margin-bottom:10px">
-        <p class="kicker" style="margin:0">${icon('layers')}${t('مسیرهای فعال ضد فیلتر', 'ACTIVE HARDENED TRANSPORTS')}</p>
-        <span class="mono muted" style="font-size:11px">${filteredInbounds.length} ACTIVE</span>
-      </div>
-      <div class="proto-grid">
-        ${filteredInbounds.map((ib) => `
-          <div class="proto-card">
-            <div class="proto-head">
-              <div class="proto-name">${icon(inboundIcon(ib), 'ic')}${t(esc(ib.title.fa), esc(ib.title.en))}</div>
-              <span class="chip ${ib.core === 'xray' ? 'xray' : 'singbox'}">${ib.core}</span>
-            </div>
-            <div class="chips">
-              <span class="chip">${esc(ib.protocol)}</span>
-              <span class="chip">${esc(ib.transport)}</span>
-              <span class="chip ok">${ib.edge === 'http' ? '0-RTT / EDGE' : 'DIRECT TCP'}</span>
-            </div>
-            <div class="proto-meta">
-              <span>${ib.edge === 'http' ? 'Endpoint' : 'SNI / Dest'}: <b>${esc(ib.edge === 'http' ? '/' + ib.routeKey : (ib.params.sni || ib.params.dest || '127.0.0.1:' + ib.port))}</b></span>
-            </div>
-          </div>
-        `).join('') || `<p class="muted">${t('هیچ پروتکلی در این دسته فعال نیست.', 'No active transports in this category.')}</p>`}
-      </div>
-    </div>
-
-    <div class="cols">
-      <div class="card">
-        <p class="kicker">${icon('cpu')}${t('وضعیت هسته‌ها و سرویس‌ها', 'CORE & ENGINE STATUS')}</p>
-        ${coreRow('Xray-core', st.cores.xray)}
-        ${coreRow('sing-box', st.cores.singbox)}
-        ${coreRow('mtg (MTProto)', st.cores.mtproto)}
-        <div class="dashed"></div>
-        <p class="kicker">${icon('globe')}${t('آدرس‌های ورودی لبه', 'EDGE ENTRY ENDPOINTS')}</p>
-        ${endpointRow('HTTPS', st.facts.panelUrl || '—', st.facts.panelUrl)}
-        ${endpointRow('TCP MUX', st.facts.tcpReady ? `${st.facts.tcpHost}:${st.facts.tcpPort}` : `127.0.0.1:${st.facts.muxPort}`, st.facts.tcpReady ? `${st.facts.tcpHost}:${st.facts.tcpPort}` : '')}
-        <div class="actions">
-          <button class="btn sm-btn primary" data-act="apply" type="button">${icon('refresh', 'ic ic-sm')}${t('بازسازی و اعمال کانفیگ', 'REBUILD & APPLY')}</button>
-          <button class="btn sm-btn ghost" data-act="tab" data-arg="cores" type="button">${icon('terminal', 'ic ic-sm')}${t('گزارش زنده', 'LIVE LOGS')}</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <p class="kicker">${icon('pulse')}${t('رویدادهای اخیر سیستم', 'RECENT SYSTEM EVENTS')}</p>
-        <div class="node-list" style="max-height:290px">
-          ${st.events.length ? st.events.map((ev) => `
-            <div class="node-row">
-              <span class="node-title"><span class="badge">${esc(ev.kind)}</span>${esc(ev.message)}</span>
-              <span class="mono" style="font-size:10.5px;opacity:.7">${relTime(ev.t)}</span>
-            </div>`).join('') : `<p class="hint">${t('رویدادی ثبت نشده است.', 'No events recorded yet.')}</p>`}
-        </div>
-      </div>
-    </div>`;
-}
-
-function endpointRow(key, value, copyValue) {
-  return `
-    <div class="endpoint">
-      <span class="ep-key">${key}</span>
-      <span class="ep-val">${esc(value)}</span>
-      ${copyValue ? `<button class="mini" data-act="copy" data-arg="${esc(copyValue)}" type="button" title="copy">${icon('copy', 'ic ic-sm')}</button>` : ''}
-    </div>`;
-}
-
-function coreRow(name, core) {
-  return `
-    <div class="node-row" style="margin-top:6px">
-      <span class="node-title"><b>${name}</b> ${coreBadge(core.status)}</span>
-      <span class="mono" style="font-size:10.5px;opacity:.75">${core.status === 'running' ? fmtUptime(core.uptimeMs) : (core.lastError ? esc(core.lastError).slice(0, 42) : '—')}</span>
-    </div>`;
-}
-
-/* ── Easy Setup (Quick Tune) ───────────────────────────────────────────── */
-
-const EASY_CACHE = { data: null, at: 0 };
-
-async function loadEasy(force = false) {
-  if (!force && EASY_CACHE.data && Date.now() - EASY_CACHE.at < 15000) return EASY_CACHE.data;
-  const data = await api('/api/easy-setup');
-  EASY_CACHE.data = data;
-  EASY_CACHE.at = Date.now();
-  return data;
-}
-
-function easyBadge(kind) {
-  const map = {
-    good: { fa: 'مقاوم در برابر DPI', en: 'DPI HARDENED', cls: 'ok' },
-    risky: { fa: 'حساس', en: 'SENSITIVE', cls: 'warn' },
-    off: { fa: 'خاموش', en: 'OFF', cls: 'off' },
-    edge: { fa: 'دامنهٔ HTTPS', en: 'HTTPS EDGE', cls: 'ok' },
-    tcp: { fa: 'پورت TCP', en: 'TCP MUX', cls: 'ok' },
-  };
-  const item = map[kind] || map.risky;
-  return `<span class="pill ${item.cls}">${t(item.fa, item.en)}</span>`;
-}
-
-function renderEasy() {
-  const pane = $('#pane-easy');
-  const data = EASY_CACHE.data;
-  if (!data) {
-    pane.innerHTML = `<div class="card"><p class="kicker">${icon('bolt')}${t('تحلیل هوشمند شبکه', 'NETWORK & DPI ANALYSIS')}</p>
-      <p class="muted">${t('در حال تحلیل…', 'Analysing environment…')}</p></div>`;
-    loadEasy(true).then(() => { if (S.tab === 'easy') renderEasy(); }).catch((err) => toast(err.message, 'warn'));
-    return;
+    return { pts, unit: 'bytes', hint: L('حجم هر ساعت در ۲۴ ساعت اخیر', 'Data per hour, last 24 hours') };
   }
-  const a = data.analysis;
+  const pts = [];
+  for (let i = 1; i < raw.length; i += 1) {
+    const a = raw[i - 1];
+    const b = raw[i];
+    const dt = Math.max(1, (b.t - a.t) / 1000);
+    const du = b.up >= a.up ? b.up - a.up : b.up;
+    const dd = b.down >= a.down ? b.down - a.down : b.down;
+    pts.push({ t: b.t, up: du / dt, down: dd / dt });
+  }
+  return { pts: pts.slice(-60), unit: 'rate', hint: L('سرعت آپلود و دانلود مشترکین', 'Subscriber upload and download speed') };
+}
+
+function chartSvg(pts, unit) {
+  if (!pts.length || pts.every((p) => !p.up && !p.down)) {
+    return `<div class="empty">${L('هنوز ترافیکی ثبت نشده است.', 'No traffic recorded yet.')}</div>`;
+  }
+  const W = 640;
+  const H = 220;
+  const padB = 22;
+  const padT = 10;
+  const max = Math.max(1, ...pts.map((p) => Math.max(p.up, p.down)));
+  const fmtV = (v) => (unit === 'rate' ? `${fmtBytes(v)}/s` : fmtBytes(v));
+  const padL = 14 + 6.6 * Math.max(...[0, 0.5, 1].map((f) => fmtV(max * f).length));
+  const x = (i) => padL + (i * (W - padL - 8)) / Math.max(1, pts.length - 1);
+  const y = (v) => padT + (H - padT - padB) * (1 - v / max);
+  const path = (k) => pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(p[k]).toFixed(1)}`).join(' ');
+  const area = `${path('down')} L${x(pts.length - 1).toFixed(1)} ${y(0)} L${x(0).toFixed(1)} ${y(0)} Z`;
+  const ticks = [0, 0.5, 1].map((f) => `<line class="grid-line" x1="${padL}" x2="${W - 8}" y1="${y(max * f)}" y2="${y(max * f)}"/><text class="axis" x="${padL - 6}" y="${y(max * f) + 3.5}" text-anchor="end">${esc(fmtV(max * f))}</text>`).join('');
+  const tl = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const xl = [0, Math.floor((pts.length - 1) / 2), pts.length - 1].map((i) => `<text class="axis" x="${x(i)}" y="${H - 5}" text-anchor="${i === 0 ? 'start' : i === pts.length - 1 ? 'end' : 'middle'}">${tl(pts[i].t)}</text>`).join('');
+  return `<svg class="chart ltr" viewBox="0 0 ${W} ${H}" role="img" aria-label="${L('نمودار ترافیک', 'Traffic chart')}">${ticks}${xl}<path class="area" d="${area}"/><path class="line down" d="${path('down')}"/><path class="line" d="${path('up')}"/></svg>
+    <div class="legend"><span><i style="background:var(--info)"></i>${L('دانلود', 'Download')}</span><span><i style="background:var(--accent)"></i>${L('آپلود', 'Upload')}</span></div>`;
+}
+
+function notices(st) {
+  const list = [...(st.warnings || [])];
+  return list.map((w) => `<div class="notice ${w.level === 'bad' ? 'bad' : w.level === 'warn' ? 'warn' : 'info'}">${icon(w.level === 'info' ? 'info' : 'alert')}<div>${esc(L(w.fa, w.en))}</div></div>`).join('');
+}
+
+function renderOverview() {
   const st = S.state;
-  const users = Array.isArray(data.users) ? data.users : (st.users || []).map((u) => ({
-    id: u.id, name: u.name, status: u.status, links: (u.links || []).length,
-    subUrl: u.subUrl, portalUrl: u.portalUrl,
-  }));
-  const okCount = a.checks.filter((c) => c.ok).length;
-  const verdict = okCount === a.checks.length
-    ? t('تمام بررسی‌های شبکه و ضد فیلتر برقرار است.', 'All network & anti-censorship checks passed.')
-    : t(`${a.checks.length - okCount} مورد قابل بهبود است.`, `${a.checks.length - okCount} item(s) can be tuned.`);
-
-  pane.innerHTML = `
-  <div class="cols">
-    <div class="card easy-hero">
-      <p class="kicker">${icon('bolt')}${t('تنظیم هوشمند ضد سانسور (BBG)', 'BBG ANTI-CENSORSHIP QUICK TUNE')}</p>
-      <p class="lede">${t(
-        'این بخش شرایط شبکه را بررسی می‌کند، پروتکل‌های مقاوم در برابر DPI (شامل REALITY، XHTTP با Padding تصادفی، 0-RTT WebSocket و AnyTLS) را فعال می‌سازد و همه را در یک اشتراک یکپارچه قرار می‌دهد.',
-        'Analyses your deployment topology, activates DPI-resistant protocols (VLESS REALITY, XHTTP with randomized padding, 0-RTT WebSocket, and AnyTLS), and bundles them into a unified subscription.',
-      )}</p>
-      <div class="easy-stats">
-        <div class="stat"><span class="tnum">${a.counts.enabled}</span><span>${t('پروتکل فعال', 'ENABLED')}</span></div>
-        <div class="stat"><span class="tnum">${a.counts.tcp}</span><span>${t('روی پورت TCP', 'OVER TCP')}</span></div>
-        <div class="stat"><span class="tnum">${a.counts.edge}</span><span>${t('از لبهٔ HTTPS', 'VIA HTTPS')}</span></div>
-        <div class="stat"><span class="tnum">${a.counts.telegram}</span><span>${t('پروکسی تلگرام', 'TELEGRAM')}</span></div>
-      </div>
-      <p class="hint">${verdict}</p>
-      <div class="profiles">
-        ${a.profiles.map((p) => `
-          <div class="profile ${(st.settings.easySetup || {}).profile === p.id ? 'current' : ''}">
-            <div class="profile-head">
-              <strong>${t(p.fa, p.en)}</strong>
-              <span class="pill ok">${p.count} ${t('پروتکل', 'METHODS')}</span>
-            </div>
-            <p class="muted">${t(p.taglineFa, p.taglineEn)}</p>
-            <ul class="ticks">
-              ${(p.notesFa || []).map((n, i) => `<li>${t(esc(n), esc((p.notesEn || [])[i] || ''))}</li>`).join('')}
-            </ul>
-            <button class="btn sm-btn primary" data-act="easy-apply" data-arg="${p.id}" type="button">
-              ${icon('check', 'ic ic-sm')}${t('اعمال پروفایل', 'APPLY PROFILE')}
-            </button>
-          </div>`).join('')}
-      </div>
-    </div>
-
-    <div class="card">
-      <p class="kicker">${icon('gauge')}${t('بررسی‌های زیرساخت', 'INFRASTRUCTURE CHECKS')}</p>
-      <div class="stack-sm">
-        ${a.checks.map((c) => `<div class="check ${c.ok ? 'ok' : 'warn'}">
-          <span class="dot"></span><span>${t(esc(c.fa), esc(c.en))}</span></div>`).join('')}
-      </div>
-      <div class="dashed"></div>
-      <table class="tbl">
-        <thead><tr>
-          <th>${t('پروتکل', 'PROTOCOL')}</th><th>${t('مسیر', 'ROUTE')}</th><th>${t('مقاومت DPI', 'RESILIENCE')}</th>
-        </tr></thead>
-        <tbody>
-          ${a.rows.filter((r) => r.enabled).map((r) => `<tr>
-            <td>${esc(r.label)}</td>
-            <td>${easyBadge(r.via)}</td>
-            <td>${easyBadge(r.iran)}</td>
-          </tr>`).join('') || `<tr><td colspan="3" class="muted">${t('هیچ روشی فعال نیست', 'Nothing enabled')}</td></tr>`}
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="cols">
-    <div class="card">
-      <p class="kicker">${icon('send')}${t('لینک اشتراک کاربران', 'SUBSCRIBER UNIFIED LINKS')}</p>
-      ${users.length ? users.map((u) => `
-        <div class="row-line">
-          <div>
-            <strong>${esc(u.name)}</strong>
-            <p class="muted tnum">${u.links} ${t('پروتکل فعال در یک اشتراک', 'active transports in one URL')}</p>
-          </div>
-          <div class="actions" style="margin-top:0">
-            <button class="btn sm-btn primary" data-act="copy" data-arg="${esc(u.subUrl)}" type="button">${icon('copy', 'ic ic-sm')}${t('کپی اشتراک', 'COPY SUB')}</button>
-            <button class="btn sm-btn ghost" data-act="open" data-arg="${esc(u.portalUrl)}" type="button">${icon('globe', 'ic ic-sm')}${t('پورتال', 'PORTAL')}</button>
-          </div>
-        </div>
-        <code class="uri">${esc(u.subUrl)}</code>`).join('')
-        : `<p class="muted">${t('ابتدا یک مشترک بسازید.', 'Create a subscriber first.')}</p>`}
-      <div class="actions">
-        <button class="btn sm-btn ghost" data-act="easy-refresh" type="button">${icon('refresh', 'ic ic-sm')}${t('تحلیل دوباره', 'RE-ANALYSE')}</button>
-        <button class="btn sm-btn ghost" data-act="tab" data-arg="delivery" type="button">${icon('qr', 'ic ic-sm')}${t('همهٔ فرمت‌ها', 'ALL FORMATS')}</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <p class="kicker">${icon('shield')}${t('توصیه‌های فنی ضد فیلتر', 'DPI CIRCUMVENTION NOTES')}</p>
-      <ol class="tips">
-        ${a.tips.map((tip) => `<li>${t(esc(tip.fa), esc(tip.en))}</li>`).join('')}
-      </ol>
-    </div>
-  </div>`;
-}
-
-/* ── BBG EdgeScan · Clean IP Scanner ───────────────────────────────────── */
-
-const RAILYNX = { data: null, timer: null, link: '' };
-
-async function railynxPoll() {
-  try {
-    RAILYNX.data = await api('/api/railynx');
-    renderRailynx();
-    if (!RAILYNX.data.running) stopRailynxPolling();
-  } catch {
-    stopRailynxPolling();
+  const users = st.users;
+  const active = users.filter((u) => u.status === 'active').length;
+  const up = users.reduce((s, u) => s + u.usage.up, 0);
+  const down = users.reduce((s, u) => s + u.usage.down, 0);
+  const on = st.inbounds.filter((i) => i.enabled);
+  let health;
+  if (isWorker()) {
+    health = { value: 'Cloudflare', sub: L('اجرا روی لبهٔ کلادفلر', 'Runs on the Cloudflare edge') };
+  } else {
+    const needed = ['xray', 'singbox'].filter((c) => on.some((i) => i.core === c));
+    const running = needed.filter((c) => st.cores[c]?.status === 'running');
+    health = { value: `${running.length} / ${needed.length}`, sub: L('هستهٔ لازم در حال اجرا', 'required cores running'), bad: running.length < needed.length };
   }
-}
-
-function startRailynxPolling() {
-  if (RAILYNX.timer) return;
-  RAILYNX.timer = setInterval(railynxPoll, 1200);
-}
-
-function stopRailynxPolling() {
-  if (RAILYNX.timer) clearInterval(RAILYNX.timer);
-  RAILYNX.timer = null;
-}
-
-function railynxVlessChoices() {
-  const out = [];
-  for (const user of (S.state.users || [])) {
-    for (const link of (user.links || [])) {
-      if (link.protocol === 'vless' && (link.transport === 'ws' || link.transport === 'httpupgrade' || link.transport === 'xhttp')) {
-        out.push({ label: `${user.name} · ${link.label.split('·').slice(-1)[0].trim()}`, uri: link.uri });
-      }
-    }
-  }
-  return out;
-}
-
-function renderRailynx() {
-  const pane = $('#pane-railynx');
-  if (!pane) return;
-  const d = RAILYNX.data || { running: false, total: 0, checked: 0, alive: 0, failed: 0, results: [], recent: [], cidr: '', concurrency: 16 };
-  const choices = railynxVlessChoices();
-  const pct = d.total ? Math.round((d.checked / d.total) * 100) : 0;
-  const elapsed = d.startedAt ? Math.max(0, ((d.finishedAt || Date.now()) - d.startedAt) / 1000) : 0;
-  const defaults = d.defaults || { cidr: '104.16.0.0/24', concurrency: 16 };
-
-  pane.innerHTML = `
-  <div class="cols">
-    <div class="card">
-      <p class="kicker">${icon('radar')}${t('BBG EdgeScan · اسکنر آی‌پی تمیز لبه', 'BBG EDGESCAN · CLEAN EDGE IP SCANNER')}</p>
-      <p class="lede">${t(
-        'یک لینک VLESS دریافت می‌کند، رنج CIDR انتخابی را با ۳ پروب متوالی بررسی کرده و آی‌پی‌های تمیز را بر اساس کمترین تأخیر (Latency) و کمترین Jitter مرتب می‌سازد.',
-        'Takes a VLESS link, sweeps a target CIDR block with 3 consecutive probes per host, and ranks clean edge IPs by lowest RTT latency and jitter.',
-      )}</p>
-
-      <label class="fld-label">${t('انتخاب لینک VLESS', 'SELECT VLESS LINK')}</label>
-      ${choices.length ? `<select id="rl-pick" class="rl-select">
-          <option value="">${t('— انتخاب از لینک‌های مشترکین —', '— Pick from subscriber links —')}</option>
-          ${choices.map((c) => `<option value="${esc(c.uri)}">${esc(c.label)}</option>`).join('')}
-        </select>` : ''}
-      <textarea id="rl-link" class="raw-box rl-link" spellcheck="false" dir="ltr" placeholder="vless://uuid@host:443?security=tls&type=ws&host=...&path=/...">${esc(RAILYNX.link)}</textarea>
-
-      <div class="field-grid" style="margin-top:10px">
-        <div>
-          <label class="fld-label">${t('رنج اسکن (CIDR)', 'SCAN RANGE (CIDR)')}</label>
-          <input type="text" id="rl-cidr" dir="ltr" value="${esc(d.cidr || defaults.cidr)}" placeholder="${esc(defaults.cidr)}">
-        </div>
-        <div>
-          <label class="fld-label">${t('ورکر هم‌زمان', 'CONCURRENT WORKERS')}</label>
-          <input type="number" id="rl-workers" min="1" max="32" value="${esc(d.concurrency || defaults.concurrency)}">
-        </div>
-      </div>
-      ${d.mode ? `<p class="muted" style="margin-top:8px">${t('حالت پروب:', 'Probe Mode:')} <b class="mono">${esc(d.mode === 'full' ? 'FULL · TLS + WS + VLESS + 204' : 'LOW-LATENCY TLS HANDSHAKE')}</b></p>` : ''}
-
-      <div class="actions">
-        <button class="btn primary" data-act="rl-start" type="button" ${d.running ? 'disabled' : ''}>
-          ${icon('radar', 'ic ic-sm')}${t('شروع اسکن', 'START SCAN')}</button>
-        <button class="btn ghost" data-act="rl-cancel" type="button" ${d.running ? '' : 'disabled'}>
-          ${icon('ban', 'ic ic-sm')}${t('توقف اسکن', 'STOP SCAN')}</button>
-      </div>
-
-      ${d.running ? `<div class="rl-progress">
-        <div class="rl-bar"><span style="width:${pct}%"></span></div>
-        <p class="muted tnum" style="margin-top:6px">${d.checked} / ${d.total} (${pct}%) · ${t('سالم', 'clean')}: ${d.alive} · ${elapsed.toFixed(0)}s</p>
-      </div>` : d.checked ? `<p class="muted tnum" style="margin-top:8px">${t('آخرین اسکن', 'LAST SCAN')}: ${d.checked} IPs · ${d.alive} ${t('سالم', 'clean')} · ${d.cidr}</p>` : ''}
-    </div>
-
-    <div class="card">
-      <p class="kicker">${icon('check')}${t('آی‌پی‌های تمیز یافت‌شده', 'VERIFIED CLEAN EDGE IPS')}</p>
-      ${d.results.length ? `
-        <table class="tbl">
-          <thead><tr>
-            <th>${t('تأخیر', 'LATENCY')}</th><th>IP</th><th></th>
-          </tr></thead>
-          <tbody>
-            ${d.results.map((r) => `<tr>
-              <td class="mono tnum">${r.latency} ms</td>
-              <td class="mono" dir="ltr">${esc(r.ip)}</td>
-              <td><button class="mini" data-act="copy" data-arg="${esc(r.link)}" type="button" title="copy">${icon('copy', 'ic ic-sm')}</button></td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-        <div class="actions">
-          <button class="btn sm-btn primary" data-act="copy" data-arg="${esc(d.results[0].link)}" type="button">
-            ${icon('copy', 'ic ic-sm')}${t('کپی کم‌تأخیرترین لینک', 'COPY FASTEST LINK')}</button>
-          <button class="btn sm-btn ghost" data-act="copy" data-arg="${esc(d.results.map((r) => r.link).join('\n'))}" type="button">
-            ${icon('file', 'ic ic-sm')}${t('کپی همه', 'COPY ALL')}</button>
-        </div>`
-        : `<p class="muted">${t('هنوز آی‌پی تمیزی ثبت نشده است. اسکن را آغاز کنید.', 'No clean addresses recorded yet. Start a scan to populate results.')}</p>`}
-      <div class="dashed"></div>
-      <p class="kicker">${icon('trace-dash')}${t('آخرین پروب‌ها', 'RECENT PROBES')}</p>
-      <div class="rl-recent">
-        ${(d.recent || []).slice(0, 12).map((r) => `<span class="chip ${r.ok ? 'ok' : ''}" dir="ltr">${esc(r.ip)}${r.ok ? ` · ${r.latency}ms` : ` · ${esc(r.reason || 'fail')}`}</span>`).join('')
-          || `<span class="muted">—</span>`}
-      </div>
-    </div>
-  </div>`;
-}
-
-/* ── Inbounds (Hardened Protocols) ─────────────────────────────────────── */
-
-function inboundIcon(ib) {
-  if (ib.protocol === 'shadowsocks') return 'shield';
-  if (ib.protocol === 'anytls' || ib.protocol === 'shadowtls') return 'lock';
-  if (ib.protocol === 'hysteria2') return 'bolt';
-  return 'link';
-}
-
-function renderInbounds() {
-  const st = S.state;
-  const q = S.searchQuery.trim().toLowerCase();
-  const list = st.inbounds.filter((ib) => {
-    if (!q) return true;
-    return (
-      ib.protocol.toLowerCase().includes(q) ||
-      ib.transport.toLowerCase().includes(q) ||
-      (ib.title.en || '').toLowerCase().includes(q) ||
-      (ib.title.fa || '').includes(q) ||
-      (ib.routeKey || '').toLowerCase().includes(q)
-    );
-  });
-
-  const cards = list.map((ib) => {
-    const editing = S.editing === ib.id;
-    const badgeCore = ib.core === 'xray' ? 'xray' : 'singbox';
-    const reach = !ib.reachable
-      ? `<span class="chip warn">${t('نیازمند UDP/TCP', 'NEEDS PORT')}</span>`
-      : `<span class="chip ok">${t('تأییدشده', 'HARDENED')}</span>`;
-    return `
-      <div class="proto-card ${ib.enabled ? '' : 'is-off'}">
-        <div class="proto-head">
-          <div class="proto-name">${icon(inboundIcon(ib), 'ic')}${t(esc(ib.title.fa), esc(ib.title.en))}</div>
-          <label class="tgl">
-            <input type="checkbox" data-act="toggle-inbound" data-arg="${ib.id}" ${ib.enabled ? 'checked' : ''}>
-            <span class="track"></span>
-          </label>
-        </div>
-        <div class="chips">
-          <span class="chip ${badgeCore}">${ib.core}</span>
-          <span class="chip">${esc(ib.protocol)}</span>
-          <span class="chip">${esc(ib.transport)}</span>
-          <span class="chip">${ib.edge === 'http' ? 'HTTPS' : 'TCP'}</span>
-          ${ib.security !== 'none' ? `<span class="chip">${esc(ib.security)}</span>` : ''}
-          ${reach}
-        </div>
-        <div class="proto-meta">
-          <span>${ib.edge === 'http' ? 'path' : 'listen'} : <b>${esc(ib.edge === 'http' ? '/\u200e' + ib.routeKey : '127.0.0.1:' + ib.port)}</b></span>
-          ${ib.params.sni ? `<span>sni : <b>${esc(ib.params.sni)}</b></span>` : ''}
-          ${ib.params.dest ? `<span>reality dest : <b>${esc(ib.params.dest)}</b></span>` : ''}
-          ${ib.params.method ? `<span>cipher : <b>${esc(ib.params.method)}</b></span>` : ''}
-        </div>
-        ${ib.reason ? `<div class="note-inline">${t(esc(ib.reason.fa), esc(ib.reason.en))}</div>` : ''}
-        ${editing ? renderInboundEditor(ib) : ''}
-        <div class="proto-acts">
-          <button class="btn sm-btn ghost" data-act="edit-inbound" data-arg="${ib.id}" type="button">${icon('edit', 'ic ic-sm')}${t('تنظیمات', 'EDIT')}</button>
-          ${ib.edge === 'http' && ib.enabled ? `<button class="btn sm-btn ghost" data-act="copy" data-arg="${esc(`${st.facts.panelUrl}/${ib.routeKey}`)}" type="button">${icon('copy', 'ic ic-sm')}${t('مسیر', 'PATH')}</button>` : ''}
-          <button class="btn sm-btn danger" data-act="del-inbound" data-arg="${ib.id}" type="button">${icon('trash', 'ic ic-sm')}</button>
-        </div>
-      </div>`;
-  }).join('');
-
-  const groups = [
-    { core: 'xray', title: t('هستهٔ Xray (استاندارد ضد فیلتر)', 'XRAY-CORE HARDENED PRESETS') },
-    { core: 'singbox', title: t('هستهٔ sing-box 1.12+', 'SING-BOX 1.12+ HARDENED PRESETS') },
-  ];
-
-  const directory = groups.map((group) => `
-    <div class="preset-group">
-      <h3>${icon(group.core === 'xray' ? 'xray' : 'singbox', 'ic ic-sm')}${group.title}</h3>
-      <div class="preset-list">
-        ${st.presets.filter((p) => p.core === group.core).map((p) => {
-          const installed = st.inbounds.filter((i) => i.presetId === p.id).length;
-          return `
-            <div class="preset-row">
-              <div class="pr-main">
-                <div class="pr-title">
-                  ${t(esc(p.title.fa), esc(p.title.en))}
-                  <span class="chip">${esc(p.transport)}</span>
-                  <span class="chip">${p.edge === 'http' ? 'HTTPS' : 'TCP'}</span>
-                  ${p.udp ? `<span class="chip warn">UDP</span>` : ''}
-                  ${p.featured ? `<span class="chip ok">${t('پیشنهادی', 'RECOMMENDED')}</span>` : ''}
-                </div>
-                <div class="pr-desc">${t(esc(p.desc.fa), esc(p.desc.en))}</div>
-                ${p.note ? `<div class="note-inline">${t(esc(p.note.fa), esc(p.note.en))}</div>` : ''}
-              </div>
-              <button class="btn sm-btn ${installed ? 'ghost' : 'primary'}" data-act="add-inbound" data-arg="${p.id}" type="button">
-                ${icon('plus', 'ic ic-sm')}${installed ? t('افزودن مجدد', 'ADD INSTANCE') : t('افزودن', 'ADD')}
-                ${installed ? `<span class="chip">${installed}</span>` : ''}
-              </button>
-            </div>`;
-        }).join('')}
-      </div>
-    </div>`).join('');
-
-  $('#pane-inbounds').innerHTML = `
-    <div class="spread">
-      <p class="kicker" style="margin:0">${icon('layers')}${t('پروتکل‌های نصب‌شده', 'INSTALLED HARDENED INBOUNDS')}</p>
-      <span class="mono" style="font-size:11px;opacity:.75">${st.inbounds.length} TOTAL · ${st.inbounds.filter((i) => i.enabled).length} ACTIVE</span>
-    </div>
-    <div class="proto-grid">${cards || `<p class="muted">${t('موردی یافت نشد.', 'No matching inbounds.')}</p>`}</div>
-
-    <div class="cols" style="margin-top:18px">
-      <div class="card card-subtle">
-        <p class="kicker">${icon('plus')}${t('کاتالوگ پروتکل‌های مقاوم BBG', 'BBG HARDENED PROTOCOL CATALOG')}</p>
-        <p class="hint" style="margin-top:0">
-          ${t('تمامی پروتکل‌های ناامن و قدیمی حذف شده‌اند. هر ردیف با تنظیمات ضد DPI، اثرانگشت uTLS Chrome و قطعه‌بندی TLS پیکربندی شده است.', 'Obsolete and easily fingerprinted protocols have been pruned. Every preset below is hardened with uTLS Chrome fingerprinting, 0-RTT early data, or randomized padding.')}
-        </p>
-        ${directory}
-      </div>
-      <div class="card">
-        <p class="kicker">${icon('plug')}${t('جدول مسیریابی لبه و مالتی‌پلکسر', 'EDGE & SNI MULTIPLEXER ROUTING TABLE')}</p>
-        <table class="tbl">
-          <thead><tr><th>${t('لایه', 'LAYER')}</th><th>${t('ورودی', 'ENTRY')}</th><th>${t('مقصد داخلی', 'TARGET')}</th></tr></thead>
-          <tbody>
-            <tr><td>HTTPS Edge</td><td class="mono">:443</td><td class="mono">${esc(st.facts.publicHost || '—')}</td></tr>
-            ${st.inbounds.filter((i) => i.edge === 'http' && i.enabled).map((ib) => `
-              <tr><td>${esc(ib.transport.toUpperCase())}</td><td class="mono">/${esc(ib.routeKey)}</td><td class="mono">127.0.0.1:${ib.port}</td></tr>`).join('')}
-            <tr><td>TCP Mux</td><td class="mono">:${st.facts.tcpPort || st.facts.muxPort}</td><td class="mono">SNI Router :${st.facts.muxPort}</td></tr>
-            ${Object.entries(st.plan.sniMap || {}).map(([sni, target]) => `
-              <tr><td>TLS SNI</td><td class="mono">${esc(sni)}</td><td class="mono">127.0.0.1:${target.port}</td></tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>`;
-}
-
-function renderInboundEditor(ib) {
-  const fields = ib.fields || [];
-  if (!fields.length) {
-    return `<p class="hint">${t('این پروتکل پارامتر قابل تنظیمی ندارد.', 'This protocol has no tunable parameters.')}</p>`;
-  }
+  const series = trafficSeries(st);
+  const top = [...users].sort((a, b) => b.usage.total - a.usage.total).slice(0, 5);
+  const endpoints = [
+    [L('آدرس پنل', 'Panel URL'), st.facts.panelUrl],
+    [L('پایهٔ لینک اشتراک', 'Subscription base'), st.facts.subBase],
+    ...(!isWorker() ? [[L('پورت TCP عمومی', 'Public TCP port'), st.facts.tcpReady ? `${st.facts.tcpHost}:${st.facts.tcpPort}` : '']] : []),
+  ].filter(([, v]) => v);
   return `
-    <div class="stack-sm" style="border-top:1px solid var(--line);padding-top:10px;margin-top:4px">
-      ${fields.map((field) => {
-        const value = ib.params[field.key] ?? '';
-        const label = `<label class="fld-label">${t(esc(field.label.fa), esc(field.label.en))}</label>`;
-        if (field.type === 'select') {
-          return `<div>${label}<select data-param="${field.key}" data-id="${ib.id}">
-            ${field.options.map((opt) => `<option value="${esc(opt)}" ${String(value) === String(opt) ? 'selected' : ''}>${esc(opt || '—')}</option>`).join('')}
-          </select></div>`;
-        }
-        const type = field.type === 'number' ? 'number' : 'text';
-        return `<div>${label}<input type="${type}" class="${field.mono ? '' : 'fa-inp'}" data-param="${field.key}" data-id="${ib.id}" value="${esc(value)}"></div>`;
-      }).join('')}
-      <div class="row">
-        <button class="btn sm-btn primary" data-act="save-inbound" data-arg="${ib.id}" type="button">${icon('save', 'ic ic-sm')}${t('ذخیره', 'SAVE')}</button>
-        <button class="btn sm-btn ghost" data-act="edit-inbound" data-arg="${ib.id}" type="button">${t('بستن', 'CLOSE')}</button>
-      </div>
+    ${notices(st)}
+    <div class="grid g4">
+      <div class="kpi"><span class="kpi-label">${icon('users', 'ic ic-sm')}${L('مشترکین فعال', 'Active subscribers')}</span><span class="kpi-value"><span class="ltr">${active} <span class="muted" style="font-size:15px">/ ${users.length}</span></span></span><span class="kpi-sub">${L(`سقف ${st.limits.maxUsers} کاربر`, `limit ${st.limits.maxUsers}`)}</span></div>
+      <div class="kpi"><span class="kpi-label">${icon('traffic', 'ic ic-sm')}${L('مصرف کل مشترکین', 'Total subscriber usage')}</span><span class="kpi-value"><span class="ltr">${fmtBytes(up + down)}</span></span><span class="kpi-sub ltr">↑ ${fmtBytes(up)} · ↓ ${fmtBytes(down)}</span></div>
+      <div class="kpi"><span class="kpi-label">${icon('layers', 'ic ic-sm')}${L('پروتکل‌های روشن', 'Protocols on')}</span><span class="kpi-value">${on.length}</span><span class="kpi-sub">${L(`از ${st.inbounds.length} پروتکل`, `of ${st.inbounds.length}`)}</span></div>
+      <div class="kpi"><span class="kpi-label">${icon('server', 'ic ic-sm')}${L('وضعیت سرویس', 'Service status')}</span><span class="kpi-value" ${health.bad ? 'style="color:var(--bad)"' : ''}><span class="ltr">${esc(health.value)}</span></span><span class="kpi-sub">${esc(health.sub)}</span></div>
+    </div>
+    <div class="split">
+      <section class="card">
+        <div class="card-head"><h2>${L('ترافیک', 'Traffic')}</h2><span class="hint">${esc(series.hint)}</span></div>
+        ${chartSvg(series.pts, series.unit)}
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>${L('بیشترین مصرف', 'Top usage')}</h2><div class="tools"><button class="btn ghost sm" type="button" data-act="page" data-arg="users">${L('همهٔ مشترکین', 'All subscribers')}</button></div></div>
+        ${top.length ? `<div class="list">${top.map((u) => usageRow(u)).join('')}</div>` : `<div class="empty">${L('هنوز مشترکی ندارید.', 'No subscribers yet.')}</div>`}
+      </section>
+    </div>
+    <div class="grid g2">
+      <section class="card">
+        <div class="card-head"><h2>${L('آدرس‌ها', 'Endpoints')}</h2></div>
+        <div class="stack">${endpoints.map(([k, v]) => `<div class="field"><span>${esc(k)}</span>${copyLine(v)}</div>`).join('') || `<div class="empty">${L('دامنه هنوز تنظیم نشده است.', 'No domain configured yet.')}</div>`}</div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>${L('رویدادهای اخیر', 'Recent events')}</h2></div>
+        ${(st.events || []).length ? `<div class="list">${st.events.slice(0, 7).map((e) => `<div class="list-row"><span class="tag">${esc(e.kind)}</span><span class="grow small ltr" style="text-align:start">${esc(e.message)}</span><span class="small muted nowrap">${relTime(e.t)}</span></div>`).join('')}</div>` : `<div class="empty">${L('رویدادی ثبت نشده است.', 'No events yet.')}</div>`}
+      </section>
     </div>`;
 }
 
-/* ── Subscribers (Users) ───────────────────────────────────────────────── */
-
-function userStatusBadge(user) {
-  const map = {
-    active: ['ok', t('فعال', 'ACTIVE')],
-    disabled: ['bad', t('غیرفعال', 'DISABLED')],
-    expired: ['bad', t('منقضی', 'EXPIRED')],
-    quota: ['bad', t('اتمام حجم', 'QUOTA')],
-  };
-  const [cls, label] = map[user.status] || ['bad', esc(user.status)];
-  return `<span class="badge ${cls}">${label}</span>`;
+function usageRow(u) {
+  const pct = u.quotaBytes ? Math.min(100, (u.usage.total / u.quotaBytes) * 100) : 0;
+  const cls = pct >= 100 ? 'bad' : pct >= 80 ? 'warn' : '';
+  return `<div class="list-row"><div class="grow"><div class="row" style="gap:8px"><span class="title">${esc(u.name)}</span>${userPill(u)}</div>
+    <div class="row small muted" style="gap:8px;margin-top:4px">${u.quotaBytes ? `<div class="meter ${cls} grow"><i style="width:${pct.toFixed(1)}%"></i></div>` : ''}<span class="num ltr">${fmtBytes(u.usage.total)}${u.quotaBytes ? ` / ${fmtBytes(u.quotaBytes)}` : ''}</span></div></div></div>`;
 }
+
+/* ── subscribers ────────────────────────────────────────────────────── */
 
 function renderUsers() {
   const st = S.state;
-  const q = S.searchQuery.trim().toLowerCase();
-  const filtered = st.users.filter((u) => {
-    if (!q) return true;
-    return u.name.toLowerCase().includes(q) || u.id.toLowerCase().includes(q) || (u.note || '').toLowerCase().includes(q);
+  const q = S.filter.trim().toLowerCase();
+  const list = st.users.filter((u) => {
+    if (S.status === 'active' && u.status !== 'active') return false;
+    if (S.status === 'inactive' && u.status === 'active') return false;
+    return !q || u.name.toLowerCase().includes(q) || (u.note || '').toLowerCase().includes(q);
   });
+  const seg = (v, fa, en) => `<button type="button" data-act="status-filter" data-arg="${v}" aria-pressed="${S.status === v}">${L(fa, en)}</button>`;
+  return `
+    <div class="row">
+      <input class="input" style="max-width:280px" id="user-search" type="search" placeholder="${L('جستجو در نام یا یادداشت', 'Search name or note')}" value="${esc(S.filter)}" aria-label="${L('جستجو', 'Search')}">
+      <div class="seg">${seg('all', 'همه', 'All')}${seg('active', 'فعال', 'Active')}${seg('inactive', 'غیرفعال', 'Inactive')}</div>
+      <span class="grow"></span>
+      <button class="btn primary" type="button" data-act="user-new">${icon('plus', 'ic ic-sm')}${L('مشترک جدید', 'New subscriber')}</button>
+    </div>
+    ${list.length ? `<div class="table-wrap"><table class="tbl stackable">
+      <thead><tr><th>${L('نام', 'Name')}</th><th>${L('وضعیت', 'Status')}</th><th>${L('مصرف', 'Usage')}</th><th>${L('انقضا', 'Expires')}</th><th>${L('آخرین اتصال', 'Last seen')}</th><th><span class="hide-sm">${L('عملیات', 'Actions')}</span></th></tr></thead>
+      <tbody>${list.map(userRow).join('')}</tbody></table></div>`
+      : `<div class="card empty">${st.users.length ? L('مشترکی با این فیلتر پیدا نشد.', 'No subscriber matches this filter.') : L('اولین مشترک را بسازید تا لینک اتصال بگیرد.', 'Create the first subscriber to get a connection link.')}</div>`}`;
+}
 
-  const cards = filtered.map((user) => {
-    const quota = user.quotaBytes || 0;
-    const percent = quota ? Math.min(100, Math.round((user.usage.total / quota) * 100)) : 0;
-    return `
-      <div class="user-card">
-        <div class="user-head">
-          <span class="user-name">${icon('users', 'ic')}${esc(user.name)} ${userStatusBadge(user)}</span>
-          <span class="mono" style="font-size:11px;opacity:.75">${esc(user.id)} · ${user.links.length} ${t('لینک', 'LINKS')}</span>
-        </div>
-        <div class="user-meta">
-          <div><span>${t('مصرف', 'USAGE')}</span><b>${fmtBytes(user.usage.total)}</b></div>
-          <div><span>${t('سهمیه', 'QUOTA')}</span><b>${quota ? fmtBytes(quota) : '∞'}</b></div>
-          <div><span>${t('انقضا', 'EXPIRES')}</span><b>${fmtDate(user.expiresAt)}</b></div>
-          <div><span>${t('آخرین فعالیت', 'LAST SEEN')}</span><b>${user.lastSeen ? relTime(user.lastSeen) : '—'}</b></div>
-        </div>
-        ${quota ? `<div class="meter ${percent > 85 ? 'warn' : ''}"><i style="width:${percent}%"></i></div>` : ''}
-        <div class="actions" style="margin-top:4px">
-          <button class="btn sm-btn primary" data-act="show-links" data-arg="${user.id}" type="button">${icon('link', 'ic ic-sm')}${t('لینک‌ها و QR', 'LINKS & QR')}</button>
-          <button class="btn sm-btn ghost" data-act="toggle-user" data-arg="${user.id}" data-value="${user.enabled ? '0' : '1'}" type="button">
-            ${icon(user.enabled ? 'ban' : 'check', 'ic ic-sm')}${user.enabled ? t('غیرفعال', 'DISABLE') : t('فعال', 'ENABLE')}
-          </button>
-          <button class="btn sm-btn ghost" data-act="reset-user" data-arg="${user.id}" type="button">${icon('refresh', 'ic ic-sm')}${t('صفر کردن مصرف', 'RESET USAGE')}</button>
-          <button class="btn sm-btn ghost" data-act="rotate-user" data-arg="${user.id}" type="button">${icon('key', 'ic ic-sm')}${t('تعویض کلید', 'ROTATE KEYS')}</button>
-          <button class="btn sm-btn danger" data-act="del-user" data-arg="${user.id}" type="button">${icon('trash', 'ic ic-sm')}</button>
-        </div>
-      </div>`;
-  }).join('');
+function userRow(u) {
+  const pct = u.quotaBytes ? Math.min(100, (u.usage.total / u.quotaBytes) * 100) : 0;
+  const cls = pct >= 100 ? 'bad' : pct >= 80 ? 'warn' : '';
+  const dl = daysLeft(u.expiresAt);
+  const b = (act, ic, label, extra = '') => `<button class="btn ghost sm icon ${extra}" type="button" data-act="${act}" data-arg="${u.id}" title="${esc(label)}" aria-label="${esc(label)}">${icon(ic, 'ic ic-sm')}</button>`;
+  return `<tr>
+    <td><div class="title">${esc(u.name)}</div>${u.note ? `<div class="small muted">${esc(u.note)}</div>` : ''}</td>
+    <td>${userPill(u)}</td>
+    <td style="min-width:170px" data-label="${esc(L('مصرف', 'Usage'))}"><div class="small"><span class="ltr num">${fmtBytes(u.usage.total)} ${u.quotaBytes ? `/ ${fmtBytes(u.quotaBytes)}` : `<span class="muted">/ ∞</span>`}</span></div>${u.quotaBytes ? `<div class="meter ${cls}" style="margin-top:5px"><i style="width:${pct.toFixed(1)}%"></i></div>` : ''}</td>
+    <td class="small" data-label="${esc(L('انقضا', 'Expires'))}">${u.expiresAt ? `${fmtDate(u.expiresAt)}<div class="muted">${dl > 0 ? L(`${dl} روز مانده`, `${dl} days left`) : L('منقضی شده', 'expired')}</div>` : `<span class="muted">${L('بدون انقضا', 'Never')}</span>`}</td>
+    <td class="small muted" data-label="${esc(L('آخرین اتصال', 'Last seen'))}">${relTime(u.lastSeen)}</td>
+    <td><div class="actions">
+      ${b('user-links', 'qr', L('لینک‌ها و QR', 'Links & QR'))}
+      ${b('user-edit', 'edit', L('ویرایش', 'Edit'))}
+      ${b('user-toggle', u.enabled ? 'ban' : 'check', u.enabled ? L('غیرفعال کردن', 'Disable') : L('فعال کردن', 'Enable'))}
+      ${b('user-reset', 'refresh', L('صفر کردن مصرف', 'Reset usage'))}
+      ${b('user-rotate', 'key', L('تعویض کلید و لینک', 'Rotate keys & link'))}
+      ${b('user-delete', 'trash', L('حذف', 'Delete'))}
+    </div></td></tr>`;
+}
 
-  $('#pane-users').innerHTML = `
-    <div class="stack">
-      <div class="card">
-        <p class="kicker">${icon('plus')}${t('ایجاد مشترک جدید', 'CREATE NEW SUBSCRIBER')}</p>
-        <div class="field-grid">
-          <div><label class="fld-label">${t('نام مشترک', 'NAME')}</label><input type="text" class="fa-inp" id="nu-name" placeholder="client-01"></div>
-          <div><label class="fld-label">${t('سهمیه حجم (GB)', 'QUOTA (GB)')}</label><input type="number" id="nu-quota" min="0" step="1" placeholder="0 = ∞"></div>
-          <div><label class="fld-label">${t('اعتبار (روز)', 'VALIDITY (DAYS)')}</label><input type="number" id="nu-days" min="0" step="1" placeholder="0 = ∞"></div>
-          <div><label class="fld-label">${t('محدودیت IP', 'IP LIMIT')}</label><input type="number" id="nu-ip" min="0" step="1" placeholder="0 = ∞"></div>
-          <div class="field-full"><label class="fld-label">${t('یادداشت', 'NOTE')}</label><input type="text" class="fa-inp" id="nu-note"></div>
-        </div>
-        <div class="actions">
-          <button class="btn primary" data-act="create-user" type="button">${icon('plus', 'ic ic-sm')}${t('ساخت مشترک', 'CREATE SUBSCRIBER')}</button>
-        </div>
-        <p class="hint">${t('هر مشترک به‌طور خودکار با کلیدهای اختصاصی (UUID، رمز Trojan/AnyTLS و کلیدهای 2022-blake3) روی تمام پروتکل‌های فعال تعریف می‌شود.', 'Each subscriber is automatically provisioned with dedicated credentials (UUID, Trojan/AnyTLS password, and 2022-blake3 key) across all active inbounds.')}</p>
+function userForm(u) {
+  const left = u?.expiresAt ? daysLeft(u.expiresAt) : null;
+  const days = left !== null && left > 0 ? left : '';
+  const quota = u?.quotaBytes ? String(+(u.quotaBytes / GB).toFixed(3)) : '';
+  return `<form class="stack" id="user-form" data-id="${u ? esc(u.id) : ''}">
+    <div class="form-grid">
+      <label class="field"><span>${L('نام', 'Name')}</span><input class="input" name="name" maxlength="64" required value="${esc(u?.name || '')}" placeholder="${L('مثلاً گوشی علی', 'e.g. Ali phone')}"></label>
+      <label class="field"><span>${L('حجم (گیگابایت)', 'Data limit (GB)')}</span><input class="input ltr" name="quotaGb" type="number" min="0" step="any" value="${quota}" data-orig="${quota}" placeholder="0 = ∞"></label>
+      <label class="field"><span>${u ? L('اعتبار از امروز (روز)', 'Valid from today (days)') : L('اعتبار (روز)', 'Valid for (days)')}</span><input class="input ltr" name="days" type="number" min="0" step="1" value="${days}" data-orig="${days}" placeholder="0 = ∞"><small>${!u ? L('خالی یا ۰ یعنی بدون انقضا.', 'Empty or 0 means it never expires.') : left !== null && left <= 0 ? L('منقضی شده است؛ برای تمدید تعداد روز را بنویسید.', 'Expired; enter a number of days to renew.') : L('اگر تغییرش ندهید، تاریخ فعلی می‌ماند.', 'Unchanged keeps the current date.')}</small></label>
+    </div>
+    <label class="field"><span>${L('یادداشت', 'Note')}</span><input class="input" name="note" maxlength="200" value="${esc(u?.note || '')}"></label>
+    <div class="form-actions"><button class="btn" type="button" data-act="modal-close">${L('انصراف', 'Cancel')}</button><button class="btn primary" type="submit">${u ? L('ذخیره', 'Save') : L('ساخت مشترک', 'Create subscriber')}</button></div>
+  </form>`;
+}
+
+const FORMATS = [
+  ['base64', 'v2rayNG · Hiddify · Streisand', ''],
+  ['singbox', 'sing-box · Hiddify', '/singbox'],
+  ['xray', 'v2rayN · Xray JSON', '/xray'],
+  ['clash', 'Clash Verge · Mihomo', '/clash'],
+  ['links', L('متن ساده', 'Plain text'), '/links'],
+];
+const subUrlFor = (u, fmt) => `${u.subUrl}${(FORMATS.find((f) => f[0] === fmt) || FORMATS[0])[2]}`;
+
+function linksBody(u) {
+  const fmt = S.linksFormat;
+  const url = subUrlFor(u, fmt);
+  return `
+    <div class="row" style="align-items:flex-start;gap:18px">
+      <div class="qr" aria-label="QR">${qrSvg(url)}</div>
+      <div class="stack grow">
+        <div class="seg" role="group">${FORMATS.map(([f]) => `<button type="button" data-act="links-format" data-arg="${f}" aria-pressed="${fmt === f}">${f}</button>`).join('')}</div>
+        <div class="small muted">${esc((FORMATS.find((f) => f[0] === fmt) || FORMATS[0])[1])}</div>
+        ${copyLine(url)}
+        ${u.portalUrl ? `<div class="field"><span>${L('صفحهٔ مشترک (برای ارسال به کاربر)', 'Subscriber page (send this to the user)')}</span>${copyLine(u.portalUrl)}</div>` : ''}
       </div>
     </div>
-    <div class="user-list">${cards || `<p class="hint">${t('مشترکی یافت نشد.', 'No subscribers found.')}</p>`}</div>`;
+    <hr class="sep">
+    <div class="section-title">${L('لینک‌های تکی', 'Single links')}</div>
+    ${u.links.length ? `<div class="stack">${u.links.map((l) => copyLine(l.uri, { qr: true, label: l.short || l.label })).join('')}</div>`
+      : `<div class="notice warn">${icon('alert')}<div>${L('این مشترک فعال نیست یا هیچ پروتکلی روشن نیست، پس لینکی ندارد.', 'This subscriber is inactive or no protocol is on, so there are no links.')}</div></div>`}`;
 }
 
-const LINK_ORDER = ['vless:reality', 'vless:xhttp', 'vless:ws', 'vless:httpupgrade', 'trojan:ws', 'vless:grpc', 'trojan:tcp', 'anytls', 'shadowtls', 'shadowsocks', 'hysteria2'];
-function linkRank(link) {
-  const key = `${link.protocol}:${link.transport}`;
-  const exact = LINK_ORDER.indexOf(key);
-  if (exact >= 0) return exact;
-  const loose = LINK_ORDER.findIndex((k) => !k.includes(':') && link.protocol === k);
-  return loose >= 0 ? loose + 100 : 900;
-}
-function sortedLinks(user) {
-  return [...(user.links || [])].sort((a, b) => linkRank(a) - linkRank(b));
-}
+/* ── protocols ──────────────────────────────────────────────────────── */
 
-const LINK_PING = new Map();
-
-function pingChip(link) {
-  const r = LINK_PING.get(link.label);
-  if (!r) return '';
-  if (!r.ok) return `<span class="ping bad" dir="ltr" title="${esc(r.error || 'fail')}">${t('قطع', 'fail')}</span>`;
-  return `<span class="ping ok" dir="ltr">${r.ms} ms</span>`;
-}
-
-function showUserLinks(userId) {
+function renderProtocols() {
   const st = S.state;
-  const user = st.users.find((u) => u.id === userId);
-  if (!user) return;
-  const body = `
-    ${user.subUrl ? `
-      <div class="endpoint">
-        <span class="ep-key">SUB URL</span>
-        <span class="ep-val">${esc(user.subUrl)}</span>
-        <button class="mini" data-act="copy" data-arg="${esc(user.subUrl)}" type="button">${icon('copy', 'ic ic-sm')}</button>
-      </div>` : ''}
-    <div class="grid-2" style="margin-top:12px">
-      <div class="qr-center">
-        <div class="qrbox qr"><div id="modal-qr"></div></div>
-        <p class="mono" style="font-size:10.5px;margin-top:6px">${esc(user.name)} · ${user.links.length} LINKS</p>
-      </div>
-      <div class="stack-sm">
-        <p class="hint" style="margin:0">${t('خروجی‌های استاندارد اشتراک:', 'Hardened Subscription Schemas:')}</p>
-        ${['links', 'base64', 'xray', 'singbox', 'clash'].map((fmt) => `
-          <a class="btn sm-btn ghost" href="${esc(user.subUrl)}/${fmt}" target="_blank" rel="noopener" download>
-            ${icon('download', 'ic ic-sm')}<span class="mono">${fmt.toUpperCase()}</span>
-          </a>`).join('')}
-        ${user.portalUrl ? `<a class="btn sm-btn primary" href="${esc(user.portalUrl)}" target="_blank" rel="noopener">${icon('external', 'ic ic-sm')}${t('پورتال مشترک', 'SUBSCRIBER PORTAL')}</a>` : ''}
-      </div>
-    </div>
-    <div class="dashed"></div>
-    <div class="spread" style="align-items:center;margin-bottom:6px">
-      <p class="kicker" style="margin:0">${icon('link')}${t('لینک‌های مستقیم هر پروتکل', 'DIRECT PROTOCOL LINKS')}</p>
-      <div class="row">
-        <button class="mini" data-act="ping-links" data-arg="${esc(user.id)}" type="button">${icon('radar', 'ic ic-sm')} ${t('تست پینگ', 'PING')}</button>
-        <button class="mini" data-act="copy" data-arg="${esc(sortedLinks(user).map((l) => l.uri).join('\n'))}" type="button" title="copy all">${icon('file', 'ic ic-sm')}</button>
-      </div>
-    </div>
-    <div class="user-links" style="max-height:280px;overflow:auto">
-      ${sortedLinks(user).map((link) => `
-        <div class="link-row">
-          <span class="lk-name">${esc(link.short || `${link.protocol.toUpperCase()} · ${link.transport}`)}</span>
-          <span class="lk-uri" dir="ltr">${esc(link.uri)}</span>
-          ${pingChip(link)}
-          <button class="mini" data-act="copy" data-arg="${esc(link.uri)}" type="button" title="copy">${icon('copy', 'ic ic-sm')}</button>
-          <button class="mini" data-act="qr" data-arg="${esc(link.uri)}" type="button" title="qr">${icon('qr', 'ic ic-sm')}</button>
-        </div>`).join('')}
-    </div>`;
-  openModal(`${esc(user.name)} — ${user.links.length} ${t('پروتکل', 'TRANSPORTS')}`, body, true);
-  qrInto($('#modal-qr'), user.subUrl || (user.links[0] && user.links[0].uri) || '');
+  const plan = st.plan || {};
+  const conflicts = [
+    ...(plan.sniConflicts || []).map((c) => L(`SNI «${c.sni}» دو بار استفاده شده؛ «${c.droppedLabel}» مسیریابی نمی‌شود.`, `SNI "${c.sni}" is used twice; "${c.droppedLabel}" is not routed.`)),
+    ...(plan.opaqueConflicts || []).map((c) => L(`فقط یک Shadowsocks روی پورت مشترک کار می‌کند؛ «${c.droppedLabel}» مسیریابی نمی‌شود.`, `Only one Shadowsocks fits the shared port; "${c.droppedLabel}" is not routed.`)),
+  ];
+  const rows = st.inbounds.map((ib) => {
+    const reach = ib.reachable ? pill('ok', L('در دسترس', 'Reachable')) : pill('warn', ib.reason ? L(ib.reason.fa, ib.reason.en) : L('در دسترس نیست', 'Unreachable'));
+    return `<tr>
+      <td style="width:52px">${sw('inbound-toggle', ib.enabled, ib.id, L('روشن/خاموش', 'On/off'))}</td>
+      <td><div class="title">${esc(L(ib.title?.fa || ib.label, ib.title?.en || ib.label))}</div><div class="small muted">${esc(L(ib.desc?.fa || '', ib.desc?.en || ''))}</div></td>
+      <td><div class="row" style="gap:5px"><span class="tag">${esc(ib.core === 'singbox' ? 'sing-box' : ib.core)}</span><span class="tag">${esc(ib.transport)}</span><span class="tag">${esc(ib.security)}</span></div></td>
+      <td>${ib.enabled ? reach : pill('mute', L('خاموش', 'Off'))}</td>
+      <td class="small" data-label="${esc(L('مسیر/پورت', 'Path/port'))}"><span class="mono ltr">${isWorker() ? esc(ib.params?.path || '') : esc(ib.edge === 'http' ? `/${ib.routeKey}` : ib.udp ? `udp :${ib.port}` : `:${ib.port}`)}</span></td>
+      <td><div class="actions">${!isWorker() ? `
+        <button class="btn ghost sm icon" type="button" data-act="inbound-edit" data-arg="${ib.id}" aria-label="${L('ویرایش', 'Edit')}" title="${L('ویرایش', 'Edit')}">${icon('edit', 'ic ic-sm')}</button>
+        <button class="btn ghost sm icon" type="button" data-act="inbound-delete" data-arg="${ib.id}" aria-label="${L('حذف', 'Delete')}" title="${L('حذف', 'Delete')}">${icon('trash', 'ic ic-sm')}</button>` : ''}</div></td>
+    </tr>`;
+  }).join('');
+  return `
+    ${isWorker() ? `<div class="notice info">${icon('info')}<div>${L('نسخهٔ Worker فقط VLESS و Trojan روی WebSocket را پشتیبانی می‌کند. برای REALITY، AnyTLS و Shadowsocks به نسخهٔ سرور (VPS) نیاز دارید.', 'The Worker edition supports VLESS and Trojan over WebSocket only. REALITY, AnyTLS and Shadowsocks need the server (VPS) edition.')}</div></div>` : ''}
+    ${conflicts.map((c) => `<div class="notice warn">${icon('alert')}<div>${esc(c)}</div></div>`).join('')}
+    <div class="row"><span class="muted small grow">${L('تغییرها بلافاصله روی کانفیگ هسته‌ها اعمال می‌شوند.', 'Changes are applied to the cores right away.')}</span>
+      ${!isWorker() ? `<button class="btn primary" type="button" data-act="inbound-new">${icon('plus', 'ic ic-sm')}${L('افزودن پروتکل', 'Add protocol')}</button>` : ''}</div>
+    <div class="table-wrap"><table class="tbl stackable"><thead><tr><th></th><th>${L('پروتکل', 'Protocol')}</th><th>${L('مشخصات', 'Details')}</th><th>${L('دسترسی', 'Reach')}</th><th>${L('مسیر/پورت', 'Path/port')}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
-/* ── Delivery (Subscriptions) ──────────────────────────────────────────── */
+function inboundForm(ib) {
+  const fields = ib.fields || [];
+  return `<form class="stack" id="inbound-form" data-id="${esc(ib.id)}">
+    <label class="field"><span>${L('نام نمایشی', 'Label')}</span><input class="input" name="label" maxlength="60" value="${esc(ib.label)}"></label>
+    <div class="form-grid">${fields.map((f) => {
+      const v = ib.params?.[f.key] ?? '';
+      const lab = L(f.label.fa, f.label.en);
+      if (f.type === 'select') return `<label class="field"><span>${esc(lab)}</span><select class="input" name="p:${f.key}">${f.options.map((o) => `<option value="${esc(o)}" ${String(v) === o ? 'selected' : ''}>${esc(o || '—')}</option>`).join('')}</select></label>`;
+      return `<label class="field"><span>${esc(lab)}</span><input class="input ${f.mono ? 'mono ltr' : ''}" name="p:${f.key}" type="${f.type === 'number' ? 'number' : 'text'}" value="${esc(v)}"></label>`;
+    }).join('')}</div>
+    <div class="form-actions"><button class="btn" type="button" data-act="modal-close">${L('انصراف', 'Cancel')}</button><button class="btn primary" type="submit">${L('ذخیره و اعمال', 'Save & apply')}</button></div>
+  </form>`;
+}
+
+/* ── delivery ───────────────────────────────────────────────────────── */
 
 const CLIENTS = [
   { name: 'v2rayNG', file: 'v2rayng.png', url: 'https://github.com/2dust/v2rayNG/releases', os: 'Android' },
@@ -1109,1027 +514,575 @@ const CLIENTS = [
   { name: 'sing-box', file: 'sing-box.svg', url: 'https://github.com/SagerNet/sing-box/releases', os: 'iOS · Android · Desktop' },
   { name: 'Clash Verge', file: 'clash-verge.svg', url: 'https://github.com/clash-verge-rev/clash-verge-rev/releases', os: 'Windows · macOS · Linux' },
   { name: 'Karing', file: 'karing.png', url: 'https://github.com/KaringX/karing/releases', os: 'iOS · Android · Desktop' },
-  { name: 'v2rayN', file: 'v2rayn.png', url: 'https://github.com/2dust/v2rayN/releases', os: 'Windows · macOS' },
+  { name: 'v2rayN', file: 'v2rayn.png', url: 'https://github.com/2dust/v2rayN/releases', os: 'Windows · macOS · Linux' },
 ];
 
 function renderDelivery() {
   const st = S.state;
-  const rows = st.users.map((user) => `
-    <tr>
-      <td><b>${esc(user.name)}</b><br><span class="mono muted" style="font-size:10px">${esc(user.id)}</span></td>
-      <td class="mono" style="font-size:10.5px;max-width:250px;overflow-wrap:anywhere">${esc(user.subUrl || '—')}</td>
-      <td class="mono">${user.links.length}</td>
-      <td>
-        <div class="row">
-          <button class="mini" data-act="copy" data-arg="${esc(user.subUrl)}" type="button">${icon('copy', 'ic ic-sm')}</button>
-          <button class="mini" data-act="qr" data-arg="${esc(user.subUrl)}" type="button">${icon('qr', 'ic ic-sm')}</button>
-          <button class="mini" data-act="show-links" data-arg="${user.id}" type="button">${icon('link', 'ic ic-sm')}</button>
-        </div>
-      </td>
-      <td>
-        <div class="pill-group">
-          ${['links', 'xray', 'singbox', 'clash'].map((fmt) => `<a class="pill" href="${esc(user.subUrl)}/${fmt}" target="_blank" rel="noopener">${fmt}</a>`).join('')}
-        </div>
-      </td>
-    </tr>`).join('');
-
-  $('#pane-delivery').innerHTML = `
-    <div class="cols">
-      <div class="card">
-        <p class="kicker">${icon('send')}${t('موتور تولید اشتراک BBG', 'BBG SUBSCRIPTION ENGINE')}</p>
-        <p class="labor">${t(
-          'هر مشترک یک توکن امضاشده با HMAC-SHA256 دارد که ۵ خروجی استاندارد و مقاوم‌شده (شامل sing-box 1.12+ با قطعه‌بندی رکورد TLS، Xray با dialerProxy fragment و Mihomo/Clash با انتخابگر خودکار کمترین پینگ) تولید می‌کند.',
-          'Each subscriber receives an HMAC-SHA256 signed subscription endpoint serving 5 hardened schemas (including sing-box 1.12+ with TLS record fragmentation, Xray with dialerProxy TLS fragmentation, and Clash/Mihomo with url-test auto-failover).',
-        )}</p>
-        <table class="tbl">
-          <thead><tr><th>${t('فرمت', 'SCHEMA')}</th><th>${t('ویژگی‌ها', 'HARDENING')}</th><th>PATH</th></tr></thead>
-          <tbody>
-            <tr><td class="mono">singbox</td><td>${t('sing-box 1.12+ · TLS Fragment · Tunnel DoH', 'sing-box 1.12+ · TLS Fragment · Tunnel DoH')}</td><td class="mono">/sub/:token/singbox</td></tr>
-            <tr><td class="mono">xray</td><td>${t('Xray JSON · Fragment Dialer · Telegram Direct CIDR', 'Xray JSON · Fragment Dialer · Telegram CIDR')}</td><td class="mono">/sub/:token/xray</td></tr>
-            <tr><td class="mono">clash</td><td>${t('Mihomo YAML · Auto URL-Test · uTLS Chrome', 'Mihomo YAML · Auto URL-Test · uTLS Chrome')}</td><td class="mono">/sub/:token/clash</td></tr>
-            <tr><td class="mono">base64</td><td>${t('سازگار با v2rayNG / v2rayN / Streisand', 'v2rayNG / v2rayN / Streisand compatible')}</td><td class="mono">/sub/:token</td></tr>
-            <tr><td class="mono">links</td><td>${t('لیست متنی URI با پارامترهای 0-RTT', 'Plain URI list with 0-RTT early data')}</td><td class="mono">/sub/:token/links</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="card card-subtle">
-        <p class="kicker">${icon('download')}${t('کلاینت‌های پیشنهادی', 'RECOMMENDED CLIENTS')}</p>
-        <div class="client-os-grid">
-          ${CLIENTS.map((c) => `
-            <a class="client-link" href="${c.url}" target="_blank" rel="noopener">
-              <img class="client-logo" src="/assets/${c.file}" alt="${c.name}">
-              <span>${c.name}<br><small class="muted" style="font-size:10px">${c.os}</small></span>
-              ${icon('external', 'ic ic-sm')}
-            </a>`).join('')}
-        </div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:16px">
-      <p class="kicker">${icon('users')}${t('جدول اشتراک مشترکین', 'SUBSCRIBER ENDPOINTS')}</p>
-      <div class="tbl-wrap">
-        <table class="tbl">
-          <thead><tr>
-            <th>${t('مشترک', 'SUBSCRIBER')}</th><th>${t('آدرس اشتراک', 'SUBSCRIPTION URL')}</th>
-            <th>${t('پروتکل‌ها', 'LINKS')}</th><th>QR</th><th>${t('فرمت‌ها', 'SCHEMAS')}</th>
-          </tr></thead>
-          <tbody>${rows || `<tr><td colspan="5" class="muted">${t('مشترکی وجود ندارد', 'No subscribers')}</td></tr>`}</tbody>
-        </table>
-      </div>
-    </div>`;
+  const users = st.users;
+  if (!S.deliveryUser || !users.some((u) => u.id === S.deliveryUser)) S.deliveryUser = (users.find((u) => u.status === 'active') || users[0])?.id || '';
+  const u = users.find((x) => x.id === S.deliveryUser);
+  return `
+    <section class="card">
+      <div class="card-head"><h2>${L('لینک‌های اشتراک', 'Subscription links')}</h2><span class="hint">${L('هر کلاینت فرمت خودش را می‌خواهد؛ لینک اشتراک خودکار به‌روز می‌شود.', 'Each client wants its own format; subscriptions update automatically.')}</span>
+        <div class="tools">${users.length ? `<select class="input" style="height:30px;width:auto" id="delivery-user" aria-label="${L('مشترک', 'Subscriber')}">${users.map((x) => `<option value="${esc(x.id)}" ${x.id === S.deliveryUser ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : ''}</div></div>
+      ${u ? `<div class="table-wrap"><table class="tbl stackable"><thead><tr><th>${L('فرمت', 'Format')}</th><th>${L('مناسب برای', 'Works with')}</th><th>${L('لینک', 'Link')}</th></tr></thead><tbody>
+        ${FORMATS.map(([f, apps]) => `<tr><td class="mono">${f}</td><td class="small">${esc(apps)}</td><td style="min-width:240px">${copyLine(subUrlFor(u, f), { qr: true })}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="field" style="margin-top:14px"><span>${L('صفحهٔ مشترک', 'Subscriber page')}</span>${copyLine(u.portalUrl)}<small>${L('این صفحه مصرف، تاریخ انقضا و لینک‌ها را به خود کاربر نشان می‌دهد.', 'Shows the user their usage, expiry and links.')}</small></div>`
+        : `<div class="empty">${L('ابتدا یک مشترک بسازید.', 'Create a subscriber first.')}</div>`}
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>${L('کلاینت‌های پیشنهادی', 'Recommended clients')}</h2></div>
+      <div class="client-grid">${CLIENTS.map((c) => `<a class="client" href="${c.url}" target="_blank" rel="noopener noreferrer"><img src="${esc(assetUrl(c.file))}" alt="" loading="lazy"><span>${esc(c.name)}<small>${esc(c.os)}</small></span></a>`).join('')}</div>
+    </section>`;
+}
+function assetUrl(file) {
+  return (window.__ASSETS && window.__ASSETS[file]) || `assets/${file}`;
 }
 
-/* ── Telegram Multiplexer ──────────────────────────────────────────────── */
+/* ── quick setup (server edition) ───────────────────────────────────── */
+
+async function loadEasy() {
+  try {
+    S.easy = await api('/api/easy-setup');
+    if (S.page === 'easy') render();
+  } catch (err) { toast(err.message, 'warn'); }
+}
+function renderEasy() {
+  const a = S.easy?.analysis;
+  if (!a) return `<div class="card empty"><span class="spinner"></span>${L('در حال بررسی…', 'Checking…')}</div>`;
+  return `
+    <section class="card"><div class="card-head"><h2>${L('بررسی وضعیت', 'Health checks')}</h2><div class="tools"><button class="btn ghost sm" type="button" data-act="easy-refresh">${icon('refresh', 'ic ic-sm')}${L('بررسی دوباره', 'Re-check')}</button></div></div>
+      <div class="list">${a.checks.map((c) => `<div class="list-row">${c.ok ? pill('ok', L('درست', 'OK')) : pill('warn', L('نیاز به کار', 'Needs work'))}<span class="grow">${esc(L(c.fa, c.en))}</span></div>`).join('')}</div></section>
+    <div class="section-title">${L('پروفایل‌های آماده', 'Ready-made profiles')}</div>
+    <div class="grid g3">${a.profiles.map((p) => `<section class="card stack">
+      <div><div class="title" style="font-weight:700">${esc(L(p.fa, p.en))}</div><div class="small muted">${esc(L(p.taglineFa, p.taglineEn))}</div></div>
+      <ul class="small" style="margin:0;padding-inline-start:18px;color:var(--ink-2)">${(S.lang === 'en' ? p.notesEn : p.notesFa).map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
+      <div class="row" style="margin-top:auto"><span class="small muted grow">${L(`${p.count} پروتکل`, `${p.count} protocols`)}</span><button class="btn primary sm" type="button" data-act="easy-apply" data-arg="${esc(p.id)}">${L('اعمال', 'Apply')}</button></div>
+    </section>`).join('')}</div>
+    <section class="card"><div class="card-head"><h2>${L('نکته‌ها', 'Tips')}</h2></div><ul class="small" style="margin:0;padding-inline-start:18px;display:flex;flex-direction:column;gap:6px">${a.tips.map((t) => `<li>${esc(L(t.fa, t.en))}</li>`).join('')}</ul></section>`;
+}
+
+/* ── telegram (server edition) ──────────────────────────────────────── */
 
 function renderTelegram() {
-  const st = S.state;
-  const tg = st.telegram;
-  const mux = st.cores.mux;
-  const ready = st.facts.tcpReady;
-
-  const qrBlock = (text) => text
-    ? `<div class="qr-center qr-inline"><div class="qrbox qr"><div data-qr="${esc(text)}"></div></div></div>`
-    : `<p class="note-inline">${t('ابتدا پورت TCP عمومی را در متغیرهای سرویس تنظیم کنید.', 'Configure the public TCP port first.')}</p>`;
-
-  $('#pane-telegram').innerHTML = `
-    <div class="card">
-      <p class="kicker">${icon('plug')}${t('مالتی‌پلکسر هوشمند تک‌پورت (SNI + Handshake Router)', 'SINGLE-PORT PROTOCOL MULTIPLEXER')}</p>
-      <p class="labor">${t(
-        'مالتی‌پلکسر BBG با بازسازی چندرکوردی TLS ClientHello و رمزگشایی هدر Obfuscated2، ترافیک REALITY، TLS، MTProto FakeTLS، SOCKS5 و HTTP CONNECT را بدون تأخیر Nagle روی یک پورت واحد تفکیک می‌کند.',
-        'The BBG single-port multiplexer reassembles multi-record TLS ClientHello frames and inspects Obfuscated2 headers to route REALITY, TLS, MTProto FakeTLS, SOCKS5, and HTTP CONNECT on a single TCP port with TCP_NODELAY enabled.',
-      )}</p>
-      <div class="kpi-grid">
-        ${[
-          ['TLS / REALITY', mux.tls, 'shield'],
-          ['SOCKS5', mux.socks, 'plug'],
-          ['HTTP CONNECT', (st.cores.http && st.cores.http.conns) || 0, 'http'],
-          ['MTPROTO', mux.mtproto, 'telegram'],
-        ].map(([label, value, ic]) => `
-          <div class="kpi"><p class="lbl">${icon(ic, 'ic ic-sm')}${label}</p><span class="val">${value || 0}</span>
-          <span class="sub">sessions</span></div>`).join('')}
-      </div>
-      <div class="endpoint" style="margin-top:12px">
-        <span class="ep-key">${t('پورت ورودی', 'MUX PORT')}</span>
-        <span class="ep-val">${ready ? esc(`${st.facts.tcpHost}:${st.facts.tcpPort}`) : `127.0.0.1:${st.facts.muxPort}`}</span>
-        ${ready ? `<button class="mini" data-act="copy" data-arg="${esc(`${st.facts.tcpHost}:${st.facts.tcpPort}`)}" type="button">${icon('copy', 'ic ic-sm')}</button>` : ''}
-      </div>
-    </div>
-
-    <div class="cols" style="margin-top:16px">
-      <div class="card">
-        <p class="kicker">${icon('telegram')}${t('پروکسی MTProto با FakeTLS v2', 'MTPROTO PROXY (FAKETLS V2)')}</p>
-        <div class="spread">
-          <label class="tgl">
-            <input type="checkbox" data-act="toggle-mtproto" ${tg.mtproto.enabled ? 'checked' : ''}>
-            <span class="track"></span>
-            <span>${t('فعال', 'ENABLED')}</span>
-          </label>
-          ${coreBadge(tg.mtproto.state.status)}
-        </div>
-        <div class="field-grid" style="margin-top:10px">
-          <div>
-            <label class="fld-label">${t('دامنهٔ FakeTLS', 'FAKETLS SNI DOMAIN')}</label>
-            <input type="text" id="tg-faketls" value="${esc(tg.mtproto.faketlsHost)}" placeholder="www.microsoft.com">
-          </div>
-          <div>
-            <label class="fld-label">${t('تگ تبلیغاتی (اختیاری)', 'AD TAG (OPTIONAL)')}</label>
-            <input type="text" id="tg-adtag" value="${esc(tg.mtproto.adTag || '')}" placeholder="—">
-          </div>
-        </div>
-        <div class="actions">
-          <button class="btn sm-btn primary" data-act="save-mtproto" type="button">${icon('save', 'ic ic-sm')}${t('ذخیره و اجرا', 'SAVE & RUN')}</button>
-          <button class="btn sm-btn ghost" data-act="regen-secret" type="button">${icon('refresh', 'ic ic-sm')}${t('تولید سکرت جدید', 'ROTATE SECRET')}</button>
-          <button class="btn sm-btn ghost" data-act="restart-core" data-arg="mtproto" type="button">${icon('power', 'ic ic-sm')}${t('ری‌استارت', 'RESTART')}</button>
-        </div>
-        ${tg.mtproto.conflict ? `<div class="note-inline">${t('دامنهٔ FakeTLS با SNI یکی از اینباندهای REALITY/TLS تداخل دارد. یکی از دو دامنه را تغییر دهید.', 'This FakeTLS domain collides with an active REALITY/TLS inbound SNI. Change one of the domains.')}</div>` : ''}
-        <div class="dashed"></div>
-        <label class="fld-label">EE-SECRET</label>
-        <div class="code-line">${esc(tg.mtproto.secret || '—')}</div>
-        ${tg.mtproto.links && tg.mtproto.links.app ? `
-          <div class="link-stack">
-            <div class="endpoint"><span class="ep-key">TG URI</span><span class="ep-val">${esc(tg.mtproto.links.app)}</span>
-              <button class="mini" data-act="copy" data-arg="${esc(tg.mtproto.links.app)}" type="button">${icon('copy', 'ic ic-sm')}</button></div>
-            <div class="endpoint"><span class="ep-key">HTTPS</span><span class="ep-val">${esc(tg.mtproto.links.web)}</span>
-              <button class="mini" data-act="copy" data-arg="${esc(tg.mtproto.links.web)}" type="button">${icon('copy', 'ic ic-sm')}</button></div>
-          </div>
-          <div class="proxy-qr-row">
-            ${qrBlock(tg.mtproto.links.web)}
-            <p class="hint">${t('با اسکن کد QR یا کلیک روی لینک، پروکسی مستقیماً در تلگرام فعال می‌شود.', 'Scan the QR code or open the link to activate the proxy inside Telegram.')}</p>
-          </div>` : ''}
-      </div>
-
-      <div class="card">
-        <p class="kicker">${icon('plug')}${t('پروکسی SOCKS5 و HTTP', 'SOCKS5 & HTTP CONNECT PROXIES')}</p>
-        <div class="spread">
-          <label class="tgl">
-            <input type="checkbox" data-act="toggle-socks" ${tg.socks.enabled ? 'checked' : ''}>
-            <span class="track"></span><span>SOCKS5</span>
-          </label>
-          <span class="mono" style="font-size:11px">${st.cores.socks5.conns} conns · ↑${fmtBytes(st.cores.socks5.up)} ↓${fmtBytes(st.cores.socks5.down)}</span>
-        </div>
-        <div class="field-grid" style="margin-top:10px">
-          <div><label class="fld-label">${t('نام کاربری SOCKS5', 'SOCKS5 USER')}</label><input type="text" id="tg-socks-user" value="${esc(tg.socks.user)}"></div>
-          <div><label class="fld-label">${t('گذرواژه SOCKS5', 'SOCKS5 PASS')}</label><input type="text" id="tg-socks-pass" value="${esc(tg.socks.pass)}"></div>
-        </div>
-        <div class="actions">
-          <button class="btn sm-btn primary" data-act="save-socks" type="button">${icon('save', 'ic ic-sm')}${t('ذخیره SOCKS5', 'SAVE SOCKS5')}</button>
-        </div>
-        ${tg.socks.link ? `
-          <div class="endpoint"><span class="ep-key">SOCKS5</span><span class="ep-val">${esc(tg.socks.link)}</span>
-            <button class="mini" data-act="copy" data-arg="${esc(tg.socks.link)}" type="button">${icon('copy', 'ic ic-sm')}</button></div>` : ''}
-
-        <div class="dashed"></div>
-        <div class="spread">
-          <label class="tgl">
-            <input type="checkbox" data-act="toggle-http" ${tg.http.enabled ? 'checked' : ''}>
-            <span class="track"></span><span>HTTP CONNECT</span>
-          </label>
-          <span class="mono" style="font-size:11px">${st.cores.http.conns} conns · ↑${fmtBytes(st.cores.http.up)} ↓${fmtBytes(st.cores.http.down)}</span>
-        </div>
-        <div class="field-grid" style="margin-top:10px">
-          <div><label class="fld-label">${t('نام کاربری HTTP', 'HTTP USER')}</label><input type="text" id="tg-http-user" value="${esc(tg.http.user)}"></div>
-          <div><label class="fld-label">${t('گذرواژه HTTP', 'HTTP PASS')}</label><input type="text" id="tg-http-pass" value="${esc(tg.http.pass)}"></div>
-        </div>
-        <div class="actions">
-          <button class="btn sm-btn primary" data-act="save-http" type="button">${icon('save', 'ic ic-sm')}${t('ذخیره HTTP', 'SAVE HTTP')}</button>
-        </div>
-        ${tg.http.link ? `
-          <div class="endpoint"><span class="ep-key">HTTP</span><span class="ep-val">${esc(tg.http.link)}</span>
-            <button class="mini" data-act="copy" data-arg="${esc(tg.http.link)}" type="button">${icon('copy', 'ic ic-sm')}</button></div>` : ''}
-      </div>
-    </div>`;
-  $$('[data-qr]').forEach((el) => qrInto(el, el.dataset.qr));
-}
-
-/* ── Cores & Logs ──────────────────────────────────────────────────────── */
-
-function coreCard(title, core, extra = '') {
+  const tg = S.state.telegram;
+  const ready = S.state.facts.tcpReady;
+  const mt = tg.mtproto;
   return `
-    <div class="card">
-      <p class="kicker">${icon('cpu')}${title}</p>
-      <div class="spread">
-        ${coreBadge(core.status)}
-        <span class="mono" style="font-size:10.5px">${esc(core.version || 'not found')}</span>
-      </div>
-      <table class="tbl" style="margin-top:8px">
-        <tbody>
-          <tr><th>PID</th><td class="mono">${core.pid || '—'}</td></tr>
-          <tr><th>${t('آپ‌تایم', 'UPTIME')}</th><td class="mono">${core.uptimeMs ? fmtUptime(core.uptimeMs) : '—'}</td></tr>
-          <tr><th>${t('ری‌استارت‌ها', 'RESTARTS')}</th><td class="mono">${core.restarts || 0}</td></tr>
-          <tr><th>${t('مسیر باینری', 'BINARY')}</th><td class="mono" style="overflow-wrap:anywhere">${esc(core.bin || '—')}</td></tr>
-          ${extra}
-        </tbody>
-      </table>
-      ${core.lastError ? `<div class="note-inline">${esc(core.lastError)}</div>` : ''}
-      <div class="actions">
-        <button class="btn sm-btn" data-act="restart-core" data-arg="${core.id || ''}" type="button">${icon('power', 'ic ic-sm')}${t('ری‌استارت', 'RESTART')}</button>
-      </div>
+    ${!ready ? `<div class="notice warn">${icon('alert')}<div>${L('پورت TCP عمومی تنظیم نشده؛ لینک‌های تلگرام بعد از تنظیم آن در «تنظیمات» ساخته می‌شوند.', 'No public TCP port yet; Telegram links appear after you set it in Settings.')}</div></div>` : ''}
+    <div class="notice info">${icon('info')}<div>${L('هر سه پروکسی روی همان پورت TCP پنل کار می‌کنند. وقتی خاموش باشند، پورت این نوع اتصال را رد می‌کند.', 'All three proxies share the panel TCP port. When off, the port refuses that kind of connection.')}</div></div>
+    <section class="card">
+      <div class="card-head"><h2>MTProto (FakeTLS)</h2>${corePill(mt.state?.status)}${mt.conflict ? pill('warn', L('تداخل SNI با REALITY', 'SNI clash with REALITY')) : ''}<div class="tools">${sw('tg-toggle', mt.enabled, 'mtproto', 'MTProto')}</div></div>
+      <form class="stack" id="tg-mtproto">
+        <div class="form-grid">
+          <label class="field"><span>${L('دامنهٔ FakeTLS', 'FakeTLS domain')}</span><input class="input mono ltr" name="faketlsHost" value="${esc(mt.faketlsHost || '')}"><small>${L('باید با SNI پروتکل‌های REALITY فرق داشته باشد.', 'Must differ from your REALITY SNI.')}</small></label>
+          <label class="field"><span>${L('تگ تبلیغاتی (اختیاری)', 'Ad tag (optional)')}</span><input class="input mono ltr" name="adTag" value="${esc(mt.adTag || '')}"></label>
+        </div>
+        <div class="form-actions"><button class="btn" type="button" data-act="tg-secret">${icon('key', 'ic ic-sm')}${L('سکرت جدید', 'New secret')}</button><button class="btn primary" type="submit">${L('ذخیره', 'Save')}</button></div>
+      </form>
+      ${mt.links?.web ? `<div class="stack" style="margin-top:12px">${copyLine(mt.links.web, { qr: true, label: 't.me' })}${copyLine(mt.links.app, { label: 'tg://' })}</div>` : ''}
+    </section>
+    <div class="grid g2">
+      ${proxyCard('socks', 'SOCKS5', tg.socks)}
+      ${proxyCard('http', 'HTTP CONNECT', tg.http)}
     </div>`;
 }
-
-function renderCores() {
-  const st = S.state;
-  const x = st.cores.xray;
-  const sb = st.cores.singbox;
-  const mt = st.cores.mtproto;
-  const mux = st.cores.mux;
-
-  $('#pane-cores').innerHTML = `
-    <div class="grid-3">
-      ${coreCard('XRAY-CORE', { ...x, id: 'xray' }, `<tr><th>${t('اینباند', 'INBOUNDS')}</th><td class="mono">${(x.routes || []).length}</td></tr>`)}
-      ${coreCard('SING-BOX', { ...sb, id: 'singbox' }, `<tr><th>${t('اینباند', 'INBOUNDS')}</th><td class="mono">${(sb.routes || []).length}</td></tr>`)}
-      ${coreCard('MTG · MTPROTO', { ...mt, id: 'mtproto' }, `<tr><th>PORT</th><td class="mono">127.0.0.1:${mt.port}</td></tr>`)}
-    </div>
-
-    <div class="cols" style="margin-top:16px">
-      <div class="card">
-        <div class="spread">
-          <p class="kicker" style="margin:0">${icon('terminal')}${t('کنسول لاگ زنده', 'LIVE ENGINE LOGS')}</p>
-          <div class="pill-group">
-            ${['xray', 'singbox', 'mtproto'].map((source) => `
-              <button class="pill ${S.logSource === source ? 'active' : ''}" data-act="log-source" data-arg="${source}" type="button">${source}</button>`).join('')}
-          </div>
-        </div>
-        <div class="console" id="log-console" style="margin-top:10px">…</div>
-        <div class="actions">
-          <button class="btn sm-btn ghost" data-act="refresh-logs" type="button">${icon('refresh', 'ic ic-sm')}${t('تازه‌سازی', 'REFRESH')}</button>
-          <a class="btn sm-btn ghost" href="/api/logs?source=${S.logSource}" target="_blank" rel="noopener">${icon('external', 'ic ic-sm')}${t('خام', 'RAW')}</a>
-        </div>
+function proxyCard(kind, title, p) {
+  return `<section class="card">
+    <div class="card-head"><h2>${title}</h2><span class="small muted ltr">conns ${S.state.cores[kind === 'socks' ? 'socks5' : 'http']?.conns || 0}</span><div class="tools">${sw('tg-toggle', p.enabled, kind, title)}</div></div>
+    <form class="stack" id="tg-${kind}">
+      <div class="form-grid">
+        <label class="field"><span>${L('نام کاربری', 'Username')}</span><input class="input mono ltr" name="user" value="${esc(p.user || '')}" required></label>
+        <label class="field"><span>${L('رمز', 'Password')}</span><input class="input mono ltr" name="pass" value="${esc(p.pass || '')}" minlength="8" required></label>
       </div>
-
-      <div class="card card-subtle">
-        <p class="kicker">${icon('pulse')}${t('سنجه‌های ران‌تایم', 'RUNTIME TELEMETRY')}</p>
-        <table class="tbl">
-          <tbody>
-            <tr><th>${t('آپ‌تایم پنل', 'PANEL UPTIME')}</th><td class="mono">${fmtUptime(Date.now() - st.cores.bootedAt)}</td></tr>
-            <tr><th>${t('آپ‌تایم Xray', 'XRAY UPTIME')}</th><td class="mono">${st.cores.sys.uptime ? `${st.cores.sys.uptime}s` : '—'}</td></tr>
-            <tr><th>Goroutines</th><td class="mono">${st.cores.sys.goroutines || '—'}</td></tr>
-            <tr><th>Heap</th><td class="mono">${st.cores.sys.alloc ? fmtBytes(st.cores.sys.alloc) : '—'}</td></tr>
-            <tr><th>${t('نشست‌های مالتی‌پلکسر', 'MUX SESSIONS')}</th><td class="mono">${mux.total}</td></tr>
-            <tr><th>${t('اتصالات فعال', 'ACTIVE STREAMS')}</th><td class="mono">${mux.active}</td></tr>
-            <tr><th>${t('ترافیک مالتی‌پلکسر', 'MUX TRAFFIC')}</th><td class="mono">↑${fmtBytes(mux.up)} ↓${fmtBytes(mux.down)}</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:16px">
-      <p class="kicker">${icon('file')}${t('کانفیگ‌های هسته و ویرایشگر JSON', 'CORE SCHEMAS & RAW JSON EDITOR')}</p>
-      <p class="hint" style="margin-top:0">${t(
-        'در هر تغییر، کانفیگ‌های Xray و sing-box از نو ساخته شده و پیش از بارگذاری با باینری هسته اعتبارسنجی می‌شوند.',
-        'Every state change rebuilds both core schemas and validates them against the core binary before hot-reloading.',
-      )}</p>
-      <div class="row">
-        <span class="chip">state/xray.json</span>
-        <span class="chip">state/sing-box.json</span>
-        <button class="btn sm-btn ghost" data-act="raw-open" data-arg="xray" type="button">${icon('edit', 'ic ic-sm')}Xray ${t('ویرایش JSON', 'RAW JSON')}</button>
-        <button class="btn sm-btn ghost" data-act="raw-open" data-arg="singbox" type="button">${icon('edit', 'ic ic-sm')}sing-box ${t('ویرایش JSON', 'RAW JSON')}</button>
-        <button class="btn sm-btn primary" data-act="apply" type="button">${icon('refresh', 'ic ic-sm')}${t('بازسازی و اعمال', 'REBUILD & APPLY')}</button>
-      </div>
-    </div>`;
-  refreshLogs();
+      <div class="form-actions"><button class="btn primary" type="submit">${L('ذخیره', 'Save')}</button></div>
+    </form>
+    ${p.link ? `<div style="margin-top:12px">${copyLine(p.link, { qr: kind === 'socks' })}</div>` : ''}
+  </section>`;
 }
 
-async function refreshLogs() {
-  const consoleEl = $('#log-console');
-  if (!consoleEl) return;
+/* ── scanner (server edition) ───────────────────────────────────────── */
+
+async function loadScan() {
   try {
-    const data = await api(`/api/logs?source=${S.logSource}`);
-    const strip = (v) => String(v).replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, '');
-    const lines = (data.lines || []).slice(-150).map(strip);
-    consoleEl.innerHTML = lines.length
-      ? lines.map((line) => `<span class="ln ${/error|fail|cannot|denied/i.test(line) ? 'err' : /warn/i.test(line) ? 'warn' : ''}">${esc(line)}</span>`).join('')
-      : '<span class="ln">—</span>';
-    consoleEl.scrollTop = consoleEl.scrollHeight;
-  } catch {
-    consoleEl.textContent = 'log unavailable';
-  }
+    S.scan = await api('/api/railynx');
+    if (S.page === 'scanner') render();
+    if (S.scan.running) startScanPoll();
+  } catch (err) { toast(err.message, 'warn'); }
 }
-
-function startLogPolling() {
-  stopLogPolling();
-  S.logTimer = setInterval(() => { if (S.tab === 'cores') refreshLogs(); }, 4000);
+function startScanPoll() {
+  clearInterval(S.timers.scan);
+  S.timers.scan = setInterval(async () => {
+    try {
+      S.scan = await api('/api/railynx');
+      if (S.page === 'scanner') render();
+      if (!S.scan.running) clearInterval(S.timers.scan);
+    } catch { clearInterval(S.timers.scan); }
+  }, 1500);
 }
-
-function stopLogPolling() {
-  if (S.logTimer) clearInterval(S.logTimer);
-  S.logTimer = null;
-}
-
-/* ── Settings ──────────────────────────────────────────────────────────── */
-
-function renderUpdateBody() {
-  const u = S.update;
-  const cur = (S.state && S.state.app && S.state.app.version) || '2.0.0';
-  if (!u) {
-    return `
-      <div class="row">
-        <span class="chip ok">v${esc(cur)}</span>
-        <span class="muted">${t('وضعیت نسخه بررسی نشده است.', 'Release status not checked yet.')}</span>
-      </div>
-      <div class="actions">
-        <button class="btn sm-btn" data-act="check-update" type="button">${icon('refresh', 'ic ic-sm')}${t('بررسی به‌روزرسانی', 'CHECK FOR UPDATE')}</button>
-      </div>`;
-  }
-  if (!u.ok) {
-    return `
-      <div class="row">
-        <span class="chip">v${esc(cur)}</span>
-        <span class="chip warn">${t('مخزن در دسترس نیست', 'Repository unreachable')}</span>
-      </div>
-      <div class="actions">
-        <button class="btn sm-btn" data-act="check-update" type="button">${icon('refresh', 'ic ic-sm')}${t('تلاش مجدد', 'RETRY')}</button>
-      </div>`;
-  }
+function renderScanner() {
+  const sc = S.scan;
+  const vless = S.state.users.flatMap((u) => u.links.filter((l) => l.protocol === 'vless' && l.transport !== 'tcp').map((l) => ({ uri: l.uri, label: `${u.name} · ${l.short || l.label}` })));
+  const pct = sc && sc.total ? Math.round((sc.checked / sc.total) * 100) : 0;
   return `
-    <div class="row">
-      <span class="chip">v${esc(cur)}</span>
-      <span>→</span>
-      <span class="chip ${u.updateAvailable ? 'ok' : ''}">${u.latest ? `v${esc(u.latest)}` : `v${esc(cur)}`}</span>
-    </div>
-    <div class="actions">
-      <button class="btn sm-btn" data-act="check-update" type="button">${icon('refresh', 'ic ic-sm')}${t('بررسی مجدد', 'CHECK AGAIN')}</button>
-      ${u.updateAvailable ? `<button class="btn sm-btn primary" data-act="apply-update" type="button">${icon('download', 'ic ic-sm')}${t('نصب و ری‌استارت', 'INSTALL & RESTART')}</button>` : ''}
-    </div>`;
+    <div class="notice info">${icon('info')}<div>${L('این ابزار از خود سرور، IPهای یک رنج کلادفلر را با لینک VLESS شما تست می‌کند و آن‌هایی که سه بار پشت سر هم بدون خطا جواب بدهند را رتبه‌بندی می‌کند. نتیجه از دید سرور است، نه از دید اینترنت ایران.', 'Tests a Cloudflare range from the server with your VLESS link and ranks IPs that answer three times in a row. Results reflect the server\'s network, not Iran\'s.')}</div></div>
+    <section class="card">
+      <form class="stack" id="scan-form">
+        <label class="field"><span>${L('لینک VLESS (WebSocket/CDN)', 'VLESS link (WebSocket/CDN)')}</span>
+          ${vless.length ? `<select class="input" name="pick"><option value="">${L('— انتخاب از لینک‌های پنل —', '— pick from panel links —')}</option>${vless.map((v) => `<option value="${esc(v.uri)}">${esc(v.label)}</option>`).join('')}</select>` : ''}
+          <input class="input mono ltr" name="link" placeholder="vless://…" value="${esc(S.scanLink || '')}"></label>
+        <div class="form-grid">
+          <label class="field"><span>${L('رنج IP', 'IP range')}</span><input class="input mono ltr" name="cidr" value="${esc(sc?.cidr || sc?.defaults?.cidr || '104.18.0.0/24')}"></label>
+          <label class="field"><span>${L('تعداد هم‌زمان', 'Workers')}</span><input class="input ltr" name="concurrency" type="number" min="1" max="32" value="${esc(sc?.concurrency || 16)}"></label>
+        </div>
+        <div class="form-actions">${sc?.running ? `<button class="btn danger" type="button" data-act="scan-cancel">${L('توقف', 'Stop')}</button>` : `<button class="btn primary" type="submit">${icon('radar', 'ic ic-sm')}${L('شروع اسکن', 'Start scan')}</button>`}</div>
+      </form>
+    </section>
+    ${sc && sc.total ? `<section class="card">
+      <div class="card-head"><h2>${L('نتیجه', 'Results')}</h2><span class="hint num">${sc.checked}/${sc.total} · ${L('سالم', 'alive')} ${sc.alive} · ${L('ناموفق', 'failed')} ${sc.failed}</span></div>
+      <div class="meter" style="margin-bottom:14px"><i style="width:${pct}%"></i></div>
+      ${sc.results?.length ? `<div class="table-wrap"><table class="tbl stackable"><thead><tr><th>IP</th><th>${L('تأخیر', 'Latency')}</th><th>${L('نوسان', 'Jitter')}</th><th>${L('امتیاز', 'Score')}</th><th></th></tr></thead><tbody>
+        ${sc.results.slice(0, 50).map((r) => `<tr><td class="mono ltr">${esc(r.ip)}</td><td>${nb(`${r.latency} ms`)}</td><td>${nb(`${r.jitter} ms`)}</td><td class="num">${r.score}</td><td><div class="actions"><button class="btn ghost sm" type="button" data-act="copy" data-arg="${esc(r.link)}">${icon('copy', 'ic ic-sm')}${L('کپی لینک', 'Copy link')}</button></div></td></tr>`).join('')}
+      </tbody></table></div>` : `<div class="empty">${sc.running ? L('هنوز IP سالمی پیدا نشده…', 'No healthy IP yet…') : L('IP سالمی پیدا نشد.', 'No healthy IP found.')}</div>`}
+    </section>` : ''}`;
 }
 
-function updateBannerHtml() {
-  const u = S.update;
-  const cur = (S.state && S.state.app && S.state.app.version) || '2.0.0';
-  if (!u || !u.ok || !u.updateAvailable) {
-    return '';
-  }
+/* ── cores & logs (server edition) ──────────────────────────────────── */
+
+function coreCard(id, title, c) {
+  return `<section class="card core-card">
+    <div class="card-head" style="margin:0"><h3>${title}</h3>${corePill(c?.status)}</div>
+    <dl class="kv">
+      ${c?.version ? `<dt>${L('نسخه', 'Version')}</dt><dd><span class="mono small ltr">${esc(c.version)}</span></dd>` : ''}
+      ${c?.uptimeMs !== undefined ? `<dt>${L('زمان اجرا', 'Uptime')}</dt><dd>${nb(fmtUptime(c.uptimeMs))}</dd>` : ''}
+      ${c?.restarts !== undefined ? `<dt>${L('ری‌استارت', 'Restarts')}</dt><dd>${nb(c.restarts)}</dd>` : ''}
+      ${c?.active !== undefined ? `<dt>${L('اتصال فعال', 'Active connections')}</dt><dd>${nb(c.active)}</dd><dt>${L('کل اتصال‌ها', 'Total connections')}</dt><dd>${nb(c.total)}</dd>` : ''}
+    </dl>
+    ${c?.lastError ? `<div class="notice bad">${icon('alert')}<div class="small" dir="ltr" style="text-align:left">${esc(c.lastError)}</div></div>` : ''}
+    ${id !== 'mux' ? `<div class="core-foot"><button class="btn sm" type="button" data-act="core-restart" data-arg="${id}">${icon('refresh', 'ic ic-sm')}${L('ری‌استارت', 'Restart')}</button></div>` : ''}
+  </section>`;
+}
+function renderCores() {
+  const c = S.state.cores;
+  const seg = (v, label) => `<button type="button" data-act="log-source" data-arg="${v}" aria-pressed="${S.logSource === v}">${label}</button>`;
   return `
-    <div class="upd-banner new" id="update-banner">
-      <span class="upd-badge new"><span class="upd-dot"></span>${t('نسخهٔ جدید BBG', 'NEW BBG RELEASE')}</span>
-      <span class="upd-text">
-        ${t('نسخهٔ', 'Version')} <b class="mono">v${esc(u.latest)}</b>
-        ${t('در دسترس است — نسخهٔ فعلی:', 'is available — current:')} <b class="mono">v${esc(cur)}</b>
-      </span>
-      <div class="upd-actions">
-        <button class="btn sm-btn primary" data-act="apply-update" type="button">${icon('download', 'ic ic-sm')}${t('به‌روزرسانی آنی', 'UPDATE NOW')}</button>
-      </div>
-    </div>`;
+    <div class="grid g4">${coreCard('xray', 'Xray-core', c.xray)}${coreCard('singbox', 'sing-box', c.singbox)}${coreCard('mtproto', 'MTProto (mtg)', c.mtproto)}${coreCard('mux', L('مالتی‌پلکسر TCP', 'TCP multiplexer'), { status: c.mux?.listening ? 'running' : 'stopped', active: c.mux?.active || 0, total: c.mux?.total || 0 })}</div>
+    <section class="card">
+      <div class="card-head"><h2>${L('لاگ‌ها', 'Logs')}</h2><div class="seg">${seg('xray', 'Xray')}${seg('singbox', 'sing-box')}${seg('mtproto', 'MTProto')}</div>
+        <div class="tools">${feat('raw') ? `<button class="btn ghost sm" type="button" data-act="raw-open" data-arg="xray">Xray JSON</button><button class="btn ghost sm" type="button" data-act="raw-open" data-arg="singbox">sing-box JSON</button>` : ''}</div></div>
+      <div class="console" id="console">${L('در حال بارگذاری…', 'Loading…')}</div>
+    </section>`;
+}
+async function refreshLogs() {
+  if (S.page !== 'cores' || !feat('logs')) return;
+  try {
+    const r = await api(`/api/logs?source=${S.logSource}`);
+    const el = $('#console');
+    if (!el) return;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+    if (r.lines.length) el.textContent = r.lines.join('\n');
+    else el.innerHTML = `<div class="empty">${L('هنوز لاگی ثبت نشده است.', 'No log lines yet.')}</div>`;
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  } catch { /* ignore */ }
 }
 
-function checkUpdateQuiet() {
-  if (S.updateBusy) return;
-  S.updateBusy = true;
-  api('/api/update')
-    .then((u) => { S.update = u; })
-    .catch(() => {})
-    .finally(() => {
-      S.updateBusy = false;
-      refreshUpdateCard();
-    });
-}
-
-function refreshUpdateCard() {
-  const card = $('#card-update');
-  if (card) card.innerHTML = `<p class="kicker">${icon('download')}${t('به‌روزرسانی سیستم BBG', 'BBG SYSTEM UPDATE')}</p>${renderUpdateBody()}`;
-}
+/* ── settings ───────────────────────────────────────────────────────── */
 
 function renderSettings() {
   const st = S.state;
-  $('#pane-settings').innerHTML = `
-    <div class="cols">
-      <div class="card">
-        <p class="kicker">${icon('globe')}${t('میزبان‌ها و پورت‌های لبه', 'EDGE HOSTS & PORTS')}</p>
-        <div class="field-grid">
-          <div><label class="fld-label">${t('دامنهٔ عمومی (HTTPS)', 'PUBLIC HOST (HTTPS)')}</label>
-            <input type="text" id="s-public" value="${esc(st.settings.publicHost)}" placeholder="${esc(st.facts.publicHost || 'edge.example.com')}"></div>
-          <div><label class="fld-label">${t('میزبان پروکسی TCP', 'TCP PROXY HOST')}</label>
-            <input type="text" id="s-tcphost" value="${esc(st.settings.tcpHost)}" placeholder="${esc(st.facts.tcpHost || 'tcp.example.com')}"></div>
-          <div><label class="fld-label">${t('پورت پروکسی TCP', 'TCP PROXY PORT')}</label>
-            <input type="number" id="s-tcpport" value="${esc(st.settings.tcpPort || '')}" placeholder="${st.facts.tcpPort || ''}"></div>
-          <div><label class="fld-label">${t('سطح لاگ هسته', 'CORE LOG LEVEL')}</label>
-            <select id="s-loglevel">
-              ${['warning', 'info', 'debug', 'error', 'none'].map((lvl) => `<option value="${lvl}" ${st.settings.logLevel === lvl ? 'selected' : ''}>${lvl}</option>`).join('')}
-            </select></div>
-        </div>
-        <p class="hint">${t('مقادیر خالی به‌طور خودکار از متغیرهای محیطی خوانده می‌شوند.', 'Empty fields automatically inherit from environment variables.')}</p>
-        <div class="actions">
-          <button class="btn primary" data-act="save-settings" type="button">${icon('save', 'ic ic-sm')}${t('ذخیره تنظیمات', 'SAVE SETTINGS')}</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <p class="kicker">${icon('shield')}${t('مقاوم‌سازی TLS و عبور از DPI', 'TLS FRAGMENTATION & DPI EVASION')}</p>
-        <label class="chk"><input type="checkbox" id="s-fragment" ${st.settings.fragment !== false ? 'checked' : ''}>
-          ${t('فعال‌سازی TLS Fragmentation در کانفیگ‌های Xray و sing-box', 'Enable TLS ClientHello & Record Fragmentation in generated configs')}</label>
-        <p class="hint">${t(
-          'با فعال بودن این گزینه، بسته‌های TLS ClientHello به قطعات ۱۰۰ تا ۲۰۰ بایتی با تأخیر ۱۰ تا ۲۰ میلی‌ثانیه تقسیم می‌شوند تا سیستم‌های بازرسی عمیق بسته (DPI) قادر به تشخیص SNI نباشند.',
-          'Splits outbound TLS ClientHello records into 100-200 byte fragments with a 10-20ms interval to defeat SNI-based Deep Packet Inspection.',
-        )}</p>
-        <div class="actions">
-          <button class="btn sm-btn primary" data-act="save-fragment" type="button">${icon('save', 'ic ic-sm')}${t('ذخیره', 'SAVE')}</button>
-        </div>
-      </div>
+  const s = st.settings;
+  const general = isWorker()
+    ? `<label class="field"><span>${L('دامنهٔ شخصی (اختیاری)', 'Custom domain (optional)')}</span><input class="input mono ltr" name="publicHost" value="${esc(s.publicHost || '')}" placeholder="vpn.example.com"><small>${L('اگر دامنه‌ات را در کلادفلر به این Worker وصل کرده‌ای، اینجا بنویس تا لینک‌ها با آن ساخته شوند.', 'If you routed your own domain to this Worker, set it so links use it.')}</small></label>
+       <label class="field"><span>${L('IPهای تمیز کلادفلر', 'Clean Cloudflare IPs')}</span><input class="input mono ltr" name="cleanIps" value="${esc(s.cleanIps || '')}" placeholder="104.16.1.1, 172.67.2.2"><small>${L('برای هر IP یک لینک جدا ساخته می‌شود (حداکثر ۵).', 'Each IP gets its own link (up to 5).')}</small></label>
+       <label class="field"><span>ProxyIP</span><input class="input mono ltr" name="proxyIp" value="${esc(s.proxyIp || '')}" placeholder="proxyip.example.com:443"><small>${L('برای باز شدن سایت‌هایی که خودشان پشت کلادفلر هستند لازم است. این سرور مقصد اتصال‌ها را می‌بیند؛ فقط از منبع مورد اعتماد استفاده کن.', 'Needed for sites that are themselves behind Cloudflare. That server sees connection destinations; use one you trust.')}</small></label>`
+    : `<div class="form-grid">
+        <label class="field"><span>${L('دامنهٔ عمومی HTTPS', 'Public HTTPS domain')}</span><input class="input mono ltr" name="publicHost" value="${esc(s.publicHost || '')}" placeholder="${esc(st.facts.publicHost || 'panel.example.com')}"></label>
+        <label class="field"><span>${L('هاست TCP عمومی', 'Public TCP host')}</span><input class="input mono ltr" name="tcpHost" value="${esc(s.tcpHost || '')}" placeholder="${esc(st.facts.tcpHost || '')}"></label>
+        <label class="field"><span>${L('پورت TCP عمومی', 'Public TCP port')}</span><input class="input ltr" name="tcpPort" type="number" min="0" max="65535" value="${esc(s.tcpPort || '')}" placeholder="${esc(st.facts.tcpPort || '')}"></label>
+      </div><small class="muted">${L('خالی بگذارید تا مقدار خودکار محیط استفاده شود.', 'Leave empty to use the value detected from the environment.')}</small>`;
+  return `
+    <section class="card">
+      <div class="card-head"><h2>${L('اتصال', 'Connection')}</h2></div>
+      <form class="stack" id="settings-form">
+        ${general}
+        <label class="check-row">${sw('noop', s.fragment !== false, '', 'fragment').replace('data-act="noop"', 'name="fragment"')}<span>${L('فرگمنت TLS در خروجی‌های JSON (کمک به عبور از DPI)', 'TLS fragment in JSON subscriptions (helps against DPI)')}</span></label>
+        <div class="form-actions"><button class="btn primary" type="submit">${L('ذخیره', 'Save')}</button></div>
+      </form>
+    </section>
+    <div class="grid g2">
+      <section class="card">
+        <div class="card-head"><h2>${L('رمز مدیر', 'Admin password')}</h2></div>
+        <form class="stack" id="password-form">
+          <label class="field"><span>${L('رمز فعلی', 'Current password')}</span><input class="input ltr" name="current" type="password" autocomplete="current-password" required></label>
+          <label class="field"><span>${L('رمز جدید (حداقل ۱۰ حرف)', 'New password (10+ characters)')}</span><input class="input ltr" name="password" type="password" autocomplete="new-password" minlength="10" required></label>
+          <label class="field"><span>${L('تکرار رمز جدید', 'Repeat new password')}</span><input class="input ltr" name="password2" type="password" autocomplete="new-password" required></label>
+          <div class="form-actions"><button class="btn primary" type="submit">${L('تغییر رمز', 'Change password')}</button></div>
+        </form>
+      </section>
+      <section class="card stack">
+        <div class="card-head" style="margin:0"><h2>${L('پشتیبان', 'Backup')}</h2></div>
+        <p class="small muted" style="margin:0">${L('فایل پشتیبان شامل کلیدها و رمزهاست؛ آن را جای امن نگه دارید.', 'The backup contains keys and passwords; keep it somewhere safe.')}</p>
+        <div class="row"><button class="btn" type="button" data-act="backup">${icon('download', 'ic ic-sm')}${L('دانلود پشتیبان', 'Download backup')}</button>
+          <label class="btn">${icon('upload', 'ic ic-sm')}${L('بازیابی از فایل', 'Restore from file')}<input type="file" id="restore-file" accept="application/json,.json" hidden></label></div>
+        <hr class="sep">
+        <div class="card-head" style="margin:0"><h2>${L('ظاهر', 'Appearance')}</h2></div>
+        <div class="row"><div class="seg"><button type="button" data-act="theme-set" data-arg="dark" aria-pressed="${S.theme === 'dark'}">${L('تیره', 'Dark')}</button><button type="button" data-act="theme-set" data-arg="light" aria-pressed="${S.theme === 'light'}">${L('روشن', 'Light')}</button></div>
+          <div class="seg"><button type="button" data-act="lang-set" data-arg="fa" aria-pressed="${S.lang === 'fa'}">فارسی</button><button type="button" data-act="lang-set" data-arg="en" aria-pressed="${S.lang === 'en'}">English</button></div></div>
+      </section>
     </div>
-
-    <div class="cols">
-      <div class="card" id="card-update">
-        <p class="kicker">${icon('download')}${t('به‌روزرسانی سیستم BBG', 'BBG SYSTEM UPDATE')}</p>
-        ${renderUpdateBody()}
-      </div>
-
-      <div class="card">
-        <p class="kicker">${icon('download')}${t('پشتیبان‌گیری و بازیابی', 'BACKUP & RESTORE')}</p>
-        <p class="labor">${t('تمامی مشترکین، کلیدها و تنظیمات در یک فایل JSON ذخیره می‌شوند.', 'All subscribers, keys, and inbound configurations are stored in a portable JSON snapshot.')}</p>
-        <div class="actions">
-          <a class="btn sm-btn primary" href="/api/backup" download>${icon('download', 'ic ic-sm')}${t('دانلود نسخهٔ پشتیبان', 'DOWNLOAD BACKUP')}</a>
-          <label class="btn sm-btn ghost" style="cursor:pointer">
-            ${icon('upload', 'ic ic-sm')}${t('بازیابی', 'RESTORE')}
-            <input type="file" id="restore-file" accept="application/json" hidden>
-          </label>
-        </div>
-        <div class="dashed"></div>
-        <p class="kicker">${icon('search')}${t('تست اتصال TCP', 'TCP CONNECTIVITY PROBE')}</p>
-        <div class="field-grid">
-          <div><label class="fld-label">${t('میزبان', 'HOST')}</label><input type="text" id="s-probe-host" placeholder="${esc(st.facts.tcpHost || '1.1.1.1')}"></div>
-          <div><label class="fld-label">PORT</label><input type="number" id="s-probe-port" value="${st.facts.tcpPort || 443}"></div>
-        </div>
-        <div class="actions">
-          <button class="btn sm-btn ghost" data-act="probe" type="button">${icon('radar', 'ic ic-sm')}${t('تست پورت', 'RUN PROBE')}</button>
-        </div>
-        <div id="probe-result"></div>
-      </div>
-    </div>
-
-    <div class="cols">
-      <div class="card">
-        <p class="kicker">${icon('cpu')}${t('مدیریت هسته‌ها و رمز عبور مدیر', 'CORE EXECUTION & OPERATOR SECURITY')}</p>
-        <div class="stack-sm">
-          <label class="chk"><input type="checkbox" id="s-core-xray" ${st.settings.cores.xray.enabled ? 'checked' : ''}>
-            ${t('اجرای هستهٔ Xray-core', 'Enable Xray-core engine')}</label>
-          <label class="chk"><input type="checkbox" id="s-core-singbox" ${st.settings.cores.singbox.enabled ? 'checked' : ''}>
-            ${t('اجرای هستهٔ sing-box', 'Enable sing-box engine')}</label>
-          <label class="chk"><input type="checkbox" id="s-core-lazy" ${st.settings.cores.singbox.lazy ? 'checked' : ''}>
-            ${t('اجرای هوشمند sing-box (فقط در صورت وجود اینباند فعال)', 'Lazy-start sing-box only when sing-box inbounds are enabled')}</label>
-          <label class="chk"><input type="checkbox" id="s-lowmem" ${st.settings.lowMemory ? 'checked' : ''}>
-            ${t('بهینه‌سازی مصرف حافظه (Low-Memory Mode)', 'Low-memory edge optimization mode')}</label>
-        </div>
-        <div class="actions">
-          <button class="btn sm-btn primary" data-act="save-cores" type="button">${icon('save', 'ic ic-sm')}${t('ذخیره هسته‌ها', 'SAVE CORES')}</button>
-        </div>
-        <div class="dashed"></div>
-        <p class="kicker">${icon('lock')}${t('تغییر گذرواژهٔ مدیر', 'CHANGE OPERATOR PASSWORD')}</p>
-        <div class="field-grid">
-          <div><label class="fld-label">${t('گذرواژهٔ فعلی', 'CURRENT PASSWORD')}</label><input type="password" id="s-pass-cur"></div>
-          <div><label class="fld-label">${t('گذرواژهٔ جدید', 'NEW PASSWORD')}</label><input type="password" id="s-pass-new"></div>
-        </div>
-        <div class="actions">
-          <button class="btn sm-btn" data-act="change-pass" type="button">${icon('key', 'ic ic-sm')}${t('به‌روزرسانی رمز', 'UPDATE PASSWORD')}</button>
-        </div>
-      </div>
-
-      <div class="card card-subtle">
-        <p class="kicker">${icon('shield')}${t('مشخصات سیستم BBG', 'BBG DEPLOYMENT SPECIFICATIONS')}</p>
-        <div class="facts-grid">
-          <div class="fact"><span>BRAND</span><b class="mono">BBG</b></div>
-          <div class="fact"><span>MAINTAINER</span><b class="mono">SANDBAAD</b></div>
-          <div class="fact"><span>VERSION</span><b class="mono">v${esc(st.app.version)}</b></div>
-          <div class="fact"><span>REGION</span><b class="mono">${esc(st.facts.region || 'auto')}</b></div>
-          <div class="fact"><span>DATA DIR</span><b class="mono">${esc(st.facts.dataDir)}</b></div>
-          <div class="fact"><span>HTTP PORT</span><b class="mono">${st.facts.port}</b></div>
-          <div class="fact"><span>MUX PORT</span><b class="mono">${st.facts.muxPort}</b></div>
-          <div class="fact"><span>XRAY BIN</span><b class="mono">${esc(st.facts.bins.xray)}</b></div>
-          <div class="fact"><span>SING-BOX BIN</span><b class="mono">${esc(st.facts.bins.singbox)}</b></div>
-          <div class="fact"><span>MTG BIN</span><b class="mono">${esc(st.facts.bins.mtg)}</b></div>
-        </div>
-      </div>
-    </div>`;
+    ${feat('update') ? `<section class="card" id="update-card">${updateBody()}</section>` : ''}
+    <section class="card"><div class="card-head"><h2>${L('درباره', 'About')}</h2></div>
+      <dl class="kv"><dt>${L('نسخه', 'Version')}</dt><dd class="mono">${esc(st.app.version)}</dd><dt>${L('نسخهٔ اجرا', 'Edition')}</dt><dd>${isWorker() ? 'Cloudflare Worker' : L('سرور (Xray + sing-box)', 'Server (Xray + sing-box)')}</dd>
+      ${!isWorker() && st.facts.dataDir ? `<dt>${L('پوشهٔ داده', 'Data folder')}</dt><dd class="mono small ltr" style="text-align:start">${esc(st.facts.dataDir)}</dd>` : ''}</dl></section>`;
+}
+function updateBody() {
+  const u = S.update;
+  return `<div class="card-head"><h2>${L('به‌روزرسانی', 'Updates')}</h2><div class="tools"><button class="btn ghost sm" type="button" data-act="update-check">${icon('refresh', 'ic ic-sm')}${L('بررسی', 'Check')}</button></div></div>
+    ${!u ? `<div class="small muted">${L('هنوز بررسی نشده است.', 'Not checked yet.')}</div>`
+      : !u.repo ? `<div class="small muted">${L('مخزن به‌روزرسانی تنظیم نشده (متغیر BBG_UPDATE_REPO).', 'No update repository configured (BBG_UPDATE_REPO).')}</div>`
+      : u.updateAvailable ? `<div class="row"><span class="grow">${L(`نسخهٔ ${esc(u.latest)} آماده است.`, `Version ${esc(u.latest)} is available.`)}</span><button class="btn primary sm" type="button" data-act="update-apply">${L('نصب و ری‌استارت', 'Install & restart')}</button></div>${u.notes ? `<pre class="console" style="height:auto;max-height:200px">${esc(u.notes)}</pre>` : ''}`
+      : `<div class="small">${L(`آخرین نسخه نصب است (${esc(u.current)}).`, `You are on the latest version (${esc(u.current)}).`)}</div>`}
+    ${u?.error ? `<div class="small" style="color:var(--bad)">${esc(u.error)}</div>` : ''}`;
+}
+async function checkUpdate(force) {
+  try {
+    S.update = await api(`/api/update${force ? '?force=1' : ''}`);
+    const card = $('#update-card');
+    if (card) card.innerHTML = updateBody();
+  } catch (err) { if (force) toast(err.message, 'warn'); }
 }
 
-/* ── Modal ─────────────────────────────────────────────────────────────── */
+/* ── modal ──────────────────────────────────────────────────────────── */
 
-function openModal(title, body, asHtml = false) {
-  if (asHtml) $('#modal-title').innerHTML = title;
-  else $('#modal-title').textContent = title;
+function openModal(title, body, { wide = false } = {}) {
+  $('#modal-title').textContent = title;
   $('#modal-body').innerHTML = body;
+  $('#modal-card').classList.toggle('wide', wide);
   $('#modal').hidden = false;
+  setTimeout(() => ($('#modal-body input:not([type=hidden]), #modal-body button') || $('#modal-card')).focus?.(), 30);
 }
-
 function closeModal() {
   $('#modal').hidden = true;
   $('#modal-body').innerHTML = '';
+  S.linksUser = '';
+}
+function confirmBox(text, act, arg, danger = true) {
+  openModal(L('تأیید', 'Confirm'), `<p style="margin:0">${esc(text)}</p><div class="form-actions"><button class="btn" type="button" data-act="modal-close">${L('انصراف', 'Cancel')}</button><button class="btn ${danger ? 'danger' : 'primary'}" type="button" data-act="${act}" data-arg="${esc(arg)}">${L('بله، انجام بده', 'Yes, do it')}</button></div>`);
 }
 
-/* ── Actions ───────────────────────────────────────────────────────────── */
+/* ── actions ────────────────────────────────────────────────────────── */
 
-function busy(on) {
-  S.busy = on;
-  document.body.style.cursor = on ? 'progress' : '';
-}
-
-async function withState(fn) {
+async function withState(fn, okMsg) {
   if (S.busy) return;
-  busy(true);
+  S.busy = true;
+  document.body.style.cursor = 'progress';
   try {
     const res = await fn();
-    if (res && res.state) {
-      S.state = res.state;
-      renderAll();
-    }
+    if (res && res.state) S.state = res.state;
+    if (okMsg) toast(okMsg);
+    render();
+    return res;
   } catch (err) {
-    if (err.status === 401) return showAuth();
     toast(err.message, 'warn');
+    if (err.status === 401) showAuth();
+    else render();
+    return null;
   } finally {
-    busy(false);
+    S.busy = false;
+    document.body.style.cursor = '';
   }
 }
-
-function paramValues(id) {
-  const out = {};
-  $$(`[data-param][data-id="${id}"]`).forEach((el) => {
-    out[el.dataset.param] = el.value;
-  });
-  return out;
-}
+const userById = (id) => S.state.users.find((u) => u.id === id);
 
 async function onAction(act, arg, el) {
   switch (act) {
-    case 'tab':
-      return switchTab(arg);
-    case 'dash-filter':
-      S.dashFilter = arg || 'all';
-      return renderDashboard();
-    case 'copy':
-      return copyText(arg);
-    case 'ping-links': {
-      LINK_PING.clear();
-      showUserLinks(arg);
-      const r = await api('/api/links/ping', { method: 'POST', body: { userId: arg } });
-      for (const x of r.results || []) LINK_PING.set(x.label, { ok: x.ok, ms: x.ms, error: x.error });
-      showUserLinks(arg);
-      const ok = (r.results || []).filter((x) => x.ok).length;
-      toast(`${ok}/${(r.results || []).length} ${tt('پروتکل پاسخ داد', 'transports responded')}`);
-      return;
-    }
-    case 'qr':
-      openModal('QR Code', `<div class="qr-center"><div class="qrbox qr"><div id="modal-qr"></div></div><p class="code-line" style="margin-top:10px;max-height:80px;overflow:auto">${esc(arg)}</p></div>`);
-      qrInto($('#modal-qr'), arg);
-      return;
-    case 'apply':
-      return withState(async () => {
-        const res = await api('/api/apply', { method: 'POST' });
-        toast(tt('کانفیگ‌ها بازسازی و اعمال شدند', 'Configs rebuilt and applied'));
-        return res;
-      });
-    case 'add-inbound':
-      return withState(() => api('/api/inbounds', { method: 'POST', body: { presetId: arg } }));
-    case 'toggle-inbound':
-      return withState(() => api(`/api/inbounds/${arg}`, { method: 'PATCH', body: { enabled: el.checked } }));
-    case 'edit-inbound':
-      S.editing = S.editing === arg ? null : arg;
-      return renderInbounds();
-    case 'save-inbound': {
-      const params = paramValues(arg);
-      return withState(() => api(`/api/inbounds/${arg}`, { method: 'PATCH', body: { params } }));
-    }
-    case 'del-inbound':
-      if (!confirm(tt('این پروتکل حذف شود؟', 'Delete this inbound?'))) return;
-      return withState(() => api(`/api/inbounds/${arg}`, { method: 'DELETE' }));
-    case 'create-user': {
-      const body = {
-        name: $('#nu-name')?.value || '',
-        quotaGb: Number($('#nu-quota')?.value || 0),
-        days: Number($('#nu-days')?.value || 0),
-        ipLimit: Number($('#nu-ip')?.value || 0),
-        note: $('#nu-note')?.value || '',
-      };
-      return withState(async () => {
-        const res = await api('/api/users', { method: 'POST', body });
-        toast(tt('مشترک ساخته شد', 'Subscriber created'));
-        return res;
-      });
-    }
-    case 'toggle-user':
-      return withState(() => api(`/api/users/${arg}`, { method: 'PATCH', body: { enabled: el.dataset.value === '1' } }));
-    case 'reset-user':
-      return withState(() => api(`/api/users/${arg}/resettraffic`, { method: 'POST' }));
-    case 'rotate-user':
-      if (!confirm(tt('کلیدهای مشترک تعویض شوند؟ لینک‌های قبلی باطل می‌شوند.', 'Rotate subscriber keys? Previous links will be invalidated.'))) return;
-      return withState(() => api(`/api/users/${arg}/rotate`, { method: 'POST' }));
-    case 'del-user':
-      if (!confirm(tt('این مشترک حذف شود؟', 'Delete this subscriber?'))) return;
-      return withState(() => api(`/api/users/${arg}`, { method: 'DELETE' }));
-    case 'show-links':
-      return showUserLinks(arg);
-    case 'toggle-mtproto':
-      return withState(() => api('/api/telegram', { method: 'POST', body: { mtproto: { enabled: el.checked } } }));
-    case 'save-mtproto':
-      return withState(() => api('/api/telegram', {
-        method: 'POST',
-        body: { mtproto: { enabled: true, faketlsHost: $('#tg-faketls')?.value || 'www.microsoft.com', adTag: $('#tg-adtag')?.value || '' } },
-      }));
-    case 'regen-secret':
-      if (!confirm(tt('سکرت جدید ساخته شود؟ لینک قبلی از کار می‌افتد.', 'Generate a new secret? Current MTProto links will stop working.'))) return;
-      return withState(() => api('/api/telegram/secret', { method: 'POST' }));
-    case 'toggle-socks':
-      return withState(() => api('/api/telegram', { method: 'POST', body: { socks: { enabled: el.checked } } }));
-    case 'save-socks':
-      return withState(() => api('/api/telegram', {
-        method: 'POST',
-        body: { socks: { enabled: true, user: $('#tg-socks-user')?.value || 'bbg', pass: $('#tg-socks-pass')?.value || '' } },
-      }));
-    case 'toggle-http':
-      return withState(() => api('/api/telegram', { method: 'POST', body: { http: { enabled: el.checked } } }));
-    case 'save-http':
-      return withState(() => api('/api/telegram', {
-        method: 'POST',
-        body: { http: { enabled: true, user: $('#tg-http-user')?.value || 'bbg', pass: $('#tg-http-pass')?.value || '' } },
-      }));
-    case 'rl-start': {
-      const link = ($('#rl-link')?.value || RAILYNX.link || '').trim();
-      if (!link) return toast(tt('ابتدا یک لینک VLESS وارد کنید.', 'Paste a VLESS link first.'), 'warn');
-      RAILYNX.link = link;
-      busy(true);
-      try {
-        RAILYNX.data = await api('/api/railynx/scan', {
-          method: 'POST',
-          body: { link, cidr: $('#rl-cidr')?.value || '', concurrency: Number($('#rl-workers')?.value || 16) },
-        });
-        startRailynxPolling();
-        renderRailynx();
-        toast(tt('اسکن آغاز شد.', 'EdgeScan started.'));
-      } catch (err) {
-        toast(err.message, 'warn');
-      } finally {
-        busy(false);
-      }
-      return;
-    }
-    case 'rl-cancel':
-      busy(true);
-      try {
-        RAILYNX.data = await api('/api/railynx/cancel', { method: 'POST' });
-        renderRailynx();
-        toast(tt('اسکن متوقف شد.', 'Scan stopped.'));
-      } catch (err) {
-        toast(err.message, 'warn');
-      } finally {
-        busy(false);
-      }
-      return;
-    case 'modal-close':
-      closeModal();
-      return;
-    case 'raw-open': {
-      const core = arg;
-      busy(true);
-      try {
-        const raw = await api('/api/raw');
-        const text = raw.active[core] || raw.generated[core] || '';
-        const flagged = raw.override[core] ? t('کانفیگ دستی فعال است', 'Manual override active') : t('کانفیگ خودکار BBG', 'BBG Auto-Generated Schema');
-        openModal(`${icon('edit', 'ic ic-sm')} ${core} · ${t('ویرایشگر JSON', 'RAW JSON CONFIG')}`, `
-          <p class="hint" style="margin-top:0">${flagged}${raw.notes && raw.notes[core] ? ` — ${esc(raw.notes[core])}` : ''}</p>
-          <textarea id="raw-box" class="raw-box" spellcheck="false" dir="ltr">${esc(text)}</textarea>
-          <div class="actions">
-            <button class="btn sm-btn primary" data-act="raw-save" data-arg="${core}" type="button">${icon('save', 'ic ic-sm')}${t('ذخیره و اعمال', 'SAVE & APPLY')}</button>
-            <button class="btn sm-btn ghost" data-act="raw-reset" data-arg="${core}" type="button">${icon('refresh', 'ic ic-sm')}${t('بازگشت به خودکار', 'RESET TO AUTO')}</button>
-            <button class="btn sm-btn ghost" data-act="modal-close" type="button">${t('بستن', 'CLOSE')}</button>
-          </div>`, true);
-      } catch (err) {
-        toast(err.message, 'warn');
-      } finally {
-        busy(false);
-      }
-      return;
-    }
-    case 'raw-save': {
-      const text = $('#raw-box')?.value || '';
-      busy(true);
-      try {
-        const res = await api('/api/raw', { method: 'POST', body: { core: arg, config: text } });
-        S.state = res.state;
-        renderAll();
-        closeModal();
-        toast(tt('کانفیگ ذخیره و اعمال شد.', 'Config saved and applied.'));
-      } catch (err) {
-        toast(err.message, 'warn');
-      } finally {
-        busy(false);
-      }
-      return;
-    }
-    case 'raw-reset': {
-      busy(true);
-      try {
-        const res = await api('/api/raw', { method: 'POST', body: { core: arg, config: '' } });
-        S.state = res.state;
-        renderAll();
-        closeModal();
-        toast(tt('به کانفیگ خودکار بازگشت.', 'Restored auto-generated config.'));
-      } catch (err) {
-        toast(err.message, 'warn');
-      } finally {
-        busy(false);
-      }
-      return;
-    }
-    case 'easy-refresh':
-      EASY_CACHE.data = null;
-      await loadEasy(true);
-      renderEasy();
-      return;
-    case 'open':
-      window.open(arg, '_blank', 'noopener');
-      return;
-    case 'easy-apply': {
-      busy(true);
-      try {
-        const res = await api('/api/easy-setup/apply', { method: 'POST', body: { profile: arg } });
-        S.state = await api('/api/state');
-        EASY_CACHE.data = await api('/api/easy-setup');
-        EASY_CACHE.at = Date.now();
-        renderAll();
-        S.tab = 'easy';
-        switchTab('easy');
-        toast(tt('پروفایل اعمال شد و لینک اشتراک کپی گردید.', 'Profile applied — subscription URL copied.'));
-        if (res.subUrl) copyText(res.subUrl);
-      } catch (err) {
-        toast(err.message, 'warn');
-      } finally {
-        busy(false);
-      }
-      return;
-    }
-    case 'restart-core':
-      return withState(async () => {
-        const res = await api(`/api/cores/${arg}/restart`, { method: 'POST' });
-        toast(`${arg} restarted`);
-        return res;
-      });
-    case 'log-source':
-      S.logSource = arg;
-      renderCores();
-      return;
-    case 'refresh-logs':
-      return refreshLogs();
-    case 'save-settings':
-      return withState(() => api('/api/settings', {
-        method: 'POST',
-        body: {
-          publicHost: $('#s-public')?.value || '',
-          tcpHost: $('#s-tcphost')?.value || '',
-          tcpPort: Number($('#s-tcpport')?.value || 0),
-          logLevel: $('#s-loglevel')?.value || 'warning',
-        },
-      }));
-    case 'check-update': {
-      S.updateBusy = true;
-      try {
-        S.update = await api('/api/update?force=1');
-      } catch (err) {
-        S.update = { ok: false, error: err.message };
-      } finally {
-        S.updateBusy = false;
-      }
-      refreshUpdateCard();
-      toast(S.update && S.update.updateAvailable
-        ? tt('نسخهٔ جدیدی در دسترس است', 'A newer release is available')
-        : tt('سیستم BBG به‌روز است', 'BBG is up to date'));
-      return;
-    }
-    case 'apply-update': {
-      if (!window.confirm(tt('فایل‌ها به‌روزرسانی شده و سرویس ری‌استارت می‌شود. ادامه می‌دهید؟', 'System files will be updated and the service will restart. Continue?'))) return;
-      toast(tt('در حال دانلود و نصب…', 'Downloading and installing…'));
-      try {
-        const r = await api('/api/update', { method: 'POST' });
-        toast(`${tt('نصب شد', 'Installed')} · v${r.version}`);
-        setTimeout(() => window.location.reload(), 4000);
-      } catch (err) {
-        toast(err.message, 'warn');
-      }
-      return;
-    }
-    case 'save-fragment':
-      return withState(() => api('/api/settings', {
-        method: 'POST',
-        body: { fragment: $('#s-fragment')?.checked ?? true },
-      }));
-    case 'save-cores':
-      return withState(() => api('/api/settings', {
-        method: 'POST',
-        body: {
-          lowMemory: $('#s-lowmem')?.checked ?? true,
-          cores: {
-            xray: { enabled: $('#s-core-xray')?.checked ?? true },
-            singbox: { enabled: $('#s-core-singbox')?.checked ?? true, lazy: $('#s-core-lazy')?.checked ?? true },
-          },
-        },
-      }));
-    case 'change-pass':
-      return withState(async () => {
-        await api('/api/admin/password', {
-          method: 'POST',
-          body: { current: $('#s-pass-cur')?.value || '', password: $('#s-pass-new')?.value || '' },
-        });
-        toast(tt('گذرواژه تغییر یافت', 'Password updated'));
-        return null;
-      });
-    case 'probe': {
-      const host = $('#s-probe-host')?.value || '';
-      const port = Number($('#s-probe-port')?.value || 443);
-      const res = await api('/api/tools/probe', { method: 'POST', body: { host, port } });
-      const box = $('#probe-result');
-      if (box) {
-        box.innerHTML = `<div class="${res.ok ? 'ok-msg' : 'err'}" style="margin-top:10px">
-          ${res.ok ? `OPEN · ${res.ms}ms` : `FAILED · ${esc(res.error)}`} — ${esc(host)}:${port}
-        </div>`;
-      }
-      return;
-    }
-    default:
-      return undefined;
+    case 'page': return go(arg);
+    case 'modal-close': return closeModal();
+    case 'copy': return copyText(arg);
+    case 'qr': return openModal('QR', `<div style="display:grid;place-items:center;gap:12px"><div class="qr" style="width:260px;height:260px">${qrSvg(arg)}</div>${copyLine(arg)}</div>`);
+    case 'theme': applyTheme(S.theme === 'dark' ? 'light' : 'dark'); render(); return api('/api/settings', { method: 'POST', body: { theme: S.theme } }).catch(() => {});
+    case 'theme-set': applyTheme(arg); render(); return api('/api/settings', { method: 'POST', body: { theme: S.theme } }).catch(() => {});
+    case 'lang': applyLang(S.lang === 'fa' ? 'en' : 'fa'); render(); return api('/api/settings', { method: 'POST', body: { lang: S.lang } }).catch(() => {});
+    case 'lang-set': applyLang(arg); render(); return api('/api/settings', { method: 'POST', body: { lang: S.lang } }).catch(() => {});
+    case 'logout': await api('/api/logout', { method: 'POST', body: {} }).catch(() => {}); S.state = null; return showAuth();
+    case 'apply': return withState(() => api('/api/apply', { method: 'POST', body: {} }), L('کانفیگ‌ها اعمال شد', 'Config applied'));
+    case 'status-filter': S.status = arg; return render();
+
+    case 'user-new': return openModal(L('مشترک جدید', 'New subscriber'), userForm(null));
+    case 'user-edit': return openModal(L('ویرایش مشترک', 'Edit subscriber'), userForm(userById(arg)));
+    case 'user-links': S.linksUser = arg; S.linksFormat = 'base64'; return openModal(`${L('لینک‌های', 'Links ·')} ${userById(arg)?.name || ''}`, linksBody(userById(arg)), { wide: true });
+    case 'links-format': S.linksFormat = arg; $('#modal-body').innerHTML = linksBody(userById(S.linksUser)); return null;
+    case 'user-toggle': { const u = userById(arg); return withState(() => api(`/api/users/${arg}`, { method: 'PATCH', body: { enabled: !u.enabled } }), u.enabled ? L('غیرفعال شد', 'Disabled') : L('فعال شد', 'Enabled')); }
+    case 'user-reset': return confirmBox(L(`مصرف «${userById(arg).name}» صفر شود؟`, `Reset usage of "${userById(arg).name}"?`), 'user-reset-yes', arg, false);
+    case 'user-reset-yes': closeModal(); return withState(() => api(`/api/users/${arg}/resettraffic`, { method: 'POST', body: {} }), L('مصرف صفر شد', 'Usage reset'));
+    case 'user-rotate': return confirmBox(L(`کلیدها و لینک اشتراک «${userById(arg).name}» عوض شود؟ لینک‌های قبلی دیگر کار نمی‌کنند.`, `Rotate keys and link for "${userById(arg).name}"? Old links stop working.`), 'user-rotate-yes', arg);
+    case 'user-rotate-yes': closeModal(); return withState(() => api(`/api/users/${arg}/rotate`, { method: 'POST', body: {} }), L('کلیدها عوض شد', 'Keys rotated'));
+    case 'user-delete': return confirmBox(L(`«${userById(arg).name}» حذف شود؟ این کار برگشت ندارد.`, `Delete "${userById(arg).name}"? This cannot be undone.`), 'user-delete-yes', arg);
+    case 'user-delete-yes': closeModal(); return withState(() => api(`/api/users/${arg}`, { method: 'DELETE' }), L('حذف شد', 'Deleted'));
+
+    case 'inbound-toggle': return withState(() => api(`/api/inbounds/${arg}`, { method: 'PATCH', body: { enabled: el.checked } }), el.checked ? L('روشن شد', 'Turned on') : L('خاموش شد', 'Turned off'));
+    case 'inbound-edit': { const ib = S.state.inbounds.find((i) => i.id === arg); return openModal(L(ib.title?.fa || ib.label, ib.title?.en || ib.label), inboundForm(ib)); }
+    case 'inbound-delete': return confirmBox(L('این پروتکل حذف شود؟', 'Delete this protocol?'), 'inbound-delete-yes', arg);
+    case 'inbound-delete-yes': closeModal(); return withState(() => api(`/api/inbounds/${arg}`, { method: 'DELETE' }), L('حذف شد', 'Deleted'));
+    case 'inbound-new': return openModal(L('افزودن پروتکل', 'Add protocol'), `<div class="list">${(S.state.presets || []).map((p) => `<div class="list-row"><div class="grow"><div class="title">${esc(L(p.title.fa, p.title.en))}</div><div class="small muted">${esc(L(p.desc.fa, p.desc.en))}</div></div><button class="btn sm" type="button" data-act="inbound-add" data-arg="${esc(p.id)}">${icon('plus', 'ic ic-sm')}${L('افزودن', 'Add')}</button></div>`).join('')}</div>`, { wide: true });
+    case 'inbound-add': closeModal(); return withState(() => api('/api/inbounds', { method: 'POST', body: { presetId: arg } }), L('اضافه شد', 'Added'));
+
+    case 'easy-refresh': S.easy = null; render(); return loadEasy();
+    case 'easy-apply': return confirmBox(L('این پروفایل پروتکل‌ها و پروکسی‌های تلگرام را تغییر می‌دهد. ادامه می‌دهید؟', 'This profile changes protocols and Telegram proxies. Continue?'), 'easy-apply-yes', arg, false);
+    case 'easy-apply-yes': closeModal(); await withState(() => api('/api/easy-setup/apply', { method: 'POST', body: { profile: arg } }), L('پروفایل اعمال شد', 'Profile applied')); await refreshState(); return loadEasy();
+
+    case 'tg-toggle': return withState(() => api('/api/telegram', { method: 'POST', body: { [arg]: { enabled: el.checked } } }), el.checked ? L('روشن شد', 'Turned on') : L('خاموش شد', 'Turned off'));
+    case 'tg-secret': return withState(() => api('/api/telegram/secret', { method: 'POST', body: {} }), L('سکرت جدید ساخته شد', 'New secret created'));
+    case 'core-restart': return withState(() => api(`/api/cores/${arg}/restart`, { method: 'POST', body: {} }), L('ری‌استارت شد', 'Restarted'));
+    case 'log-source': S.logSource = arg; render(); return refreshLogs();
+    case 'raw-open': return openRaw(arg);
+    case 'raw-save': return saveRaw(arg, false);
+    case 'raw-reset': return saveRaw(arg, true);
+    case 'scan-cancel': S.scan = await api('/api/railynx/cancel', { method: 'POST', body: {} }).catch((e) => { toast(e.message, 'warn'); return S.scan; }); return render();
+
+    case 'backup': return downloadBackup();
+    case 'update-check': return checkUpdate(true);
+    case 'update-apply': return confirmBox(L('پنل به‌روزرسانی و ری‌استارت شود؟', 'Update and restart the panel?'), 'update-apply-yes', '', false);
+    case 'update-apply-yes': closeModal(); return withState(async () => { const r = await api('/api/update', { method: 'POST', body: {} }); toast(L('به‌روزرسانی نصب شد؛ پنل ری‌استارت می‌شود…', 'Update installed; restarting…')); setTimeout(() => location.reload(), 5000); return r; });
+    default: return null;
   }
 }
 
-document.addEventListener('click', (ev) => {
-  const el = ev.target.closest('[data-act]');
-  if (!el) return;
-  const act = el.dataset.act;
-  if (act === 'toggle-inbound' || act === 'toggle-mtproto' || act === 'toggle-socks' || act === 'toggle-http') return;
-  ev.preventDefault();
-  onAction(act, el.dataset.arg, el);
-});
+async function openRaw(core) {
+  try {
+    const raw = await api('/api/raw');
+    const notes = raw.notes?.[core];
+    openModal(`${core === 'xray' ? 'Xray' : 'sing-box'} JSON`, `
+      <div class="notice info">${icon('info')}<div>${L('کانفیگ دستی جای کانفیگ ساخته‌شده را می‌گیرد. اگر هسته آن را رد کند، پنل خودکار به کانفیگ ساخته‌شده برمی‌گردد.', 'A manual config replaces the generated one. If the core rejects it, the panel falls back to the generated config.')}</div></div>
+      ${notes ? `<div class="notice warn">${icon('alert')}<div class="small ltr" style="text-align:start">${esc(notes)}</div></div>` : ''}
+      <textarea class="input" id="raw-text" rows="18" spellcheck="false">${esc(raw.override?.[core] ? raw.active[core] : raw.generated[core])}</textarea>
+      <div class="form-actions"><button class="btn danger" type="button" data-act="raw-reset" data-arg="${core}">${L('برگشت به کانفیگ ساخته‌شده', 'Use generated config')}</button><button class="btn primary" type="button" data-act="raw-save" data-arg="${core}">${L('ذخیره و اعمال', 'Save & apply')}</button></div>`, { wide: true });
+  } catch (err) { toast(err.message, 'warn'); }
+}
+async function saveRaw(core, reset) {
+  const text = reset ? '' : $('#raw-text')?.value || '';
+  const r = await withState(() => api('/api/raw', { method: 'POST', body: { core, config: text } }), reset ? L('کانفیگ ساخته‌شده فعال شد', 'Generated config in use') : L('ذخیره شد', 'Saved'));
+  if (r) closeModal();
+}
 
-document.addEventListener('change', (ev) => {
-  if (ev.target.id === 'rl-pick') {
-    const box = $('#rl-link');
-    if (box && ev.target.value) {
-      box.value = ev.target.value;
-      RAILYNX.link = ev.target.value;
+async function downloadBackup() {
+  try {
+    const res = await fetch(`${BASE}/api/backup`, { credentials: 'same-origin', headers: { 'x-requested-with': 'bbg' } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `bbg-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  } catch (err) { toast(err.message, 'warn'); }
+}
+
+/* ── forms ──────────────────────────────────────────────────────────── */
+
+async function onSubmit(form) {
+  const fd = new FormData(form);
+  const v = (k) => String(fd.get(k) ?? '').trim();
+  switch (form.id) {
+    case 'user-form': {
+      const id = form.dataset.id;
+      const changed = (k) => !id || v(k) !== (form.elements[k].dataset.orig ?? '');
+      const body = { name: v('name'), note: v('note') };
+      if (changed('quotaGb')) body.quotaGb = Number(v('quotaGb') || 0);
+      if (changed('days')) body.days = Number(v('days') || 0);
+      if (!body.name) return toast(L('نام را وارد کنید', 'Enter a name'), 'warn');
+      const r = await withState(() => api(id ? `/api/users/${id}` : '/api/users', { method: id ? 'PATCH' : 'POST', body }), id ? L('ذخیره شد', 'Saved') : L('مشترک ساخته شد', 'Subscriber created'));
+      if (r) {
+        closeModal();
+        if (!id && r.user?.id) onAction('user-links', r.user.id);
+      }
+      return null;
     }
-    return;
+    case 'inbound-form': {
+      const params = {};
+      for (const [k, val] of fd.entries()) if (k.startsWith('p:')) params[k.slice(2)] = String(val).trim();
+      const r = await withState(() => api(`/api/inbounds/${form.dataset.id}`, { method: 'PATCH', body: { label: v('label'), params } }), L('ذخیره و اعمال شد', 'Saved and applied'));
+      if (r) closeModal();
+      return null;
+    }
+    case 'settings-form': {
+      const body = { fragment: form.querySelector('[name=fragment]').checked };
+      for (const k of ['publicHost', 'tcpHost', 'tcpPort', 'cleanIps', 'proxyIp']) if (fd.has(k)) body[k] = k === 'tcpPort' ? Number(v(k) || 0) : v(k);
+      return withState(() => api('/api/settings', { method: 'POST', body }), L('ذخیره شد', 'Saved'));
+    }
+    case 'password-form': {
+      if (v('password') !== v('password2')) return toast(L('تکرار رمز یکسان نیست', 'Passwords do not match'), 'warn');
+      if (v('password').length < 10) return toast(L('رمز باید حداقل ۱۰ حرف باشد', 'Use at least 10 characters'), 'warn');
+      const r = await withState(() => api('/api/admin/password', { method: 'POST', body: { current: fd.get('current'), password: fd.get('password') } }), L('رمز عوض شد', 'Password changed'));
+      if (r) form.reset();
+      return null;
+    }
+    case 'tg-mtproto': return withState(() => api('/api/telegram', { method: 'POST', body: { mtproto: { faketlsHost: v('faketlsHost'), adTag: v('adTag') } } }), L('ذخیره شد', 'Saved'));
+    case 'tg-socks':
+    case 'tg-http': {
+      const kind = form.id.slice(3);
+      if (v('pass').length < 8) return toast(L('رمز باید حداقل ۸ حرف باشد', 'Use at least 8 characters'), 'warn');
+      return withState(() => api('/api/telegram', { method: 'POST', body: { [kind]: { user: v('user'), pass: v('pass') } } }), L('ذخیره شد', 'Saved'));
+    }
+    case 'scan-form': {
+      const link = v('link') || v('pick');
+      if (!link) return toast(L('یک لینک VLESS انتخاب یا وارد کنید', 'Pick or paste a VLESS link'), 'warn');
+      S.scanLink = link;
+      try {
+        S.scan = await api('/api/railynx/scan', { method: 'POST', body: { link, cidr: v('cidr'), concurrency: Number(v('concurrency') || 16) } });
+        render();
+        startScanPoll();
+      } catch (err) { toast(err.message, 'warn'); }
+      return null;
+    }
+    default: return null;
   }
-  const el = ev.target.closest('[data-act]');
-  if (!el) return;
-  if (['toggle-inbound', 'toggle-mtproto', 'toggle-socks', 'toggle-http'].includes(el.dataset.act)) {
-    onAction(el.dataset.act, el.dataset.arg, el);
-  }
-});
+}
 
-/* ── Auth Flow ─────────────────────────────────────────────────────────── */
+/* ── auth & boot ────────────────────────────────────────────────────── */
 
 function showAuth() {
   $('#boot').hidden = true;
   $('#app').hidden = true;
   $('#auth').hidden = false;
-  const needsSetup = S.boot.needsSetup;
-  $('#auth-pass2-wrap').hidden = !needsSetup;
-  $('#auth-kicker').textContent = needsSetup ? 'راه‌اندازی اولیه BBG' : 'ورود اپراتور BBG';
-  $('#auth-kicker-en').textContent = needsSetup ? 'INITIALIZE BBG OPERATOR' : 'BBG OPERATOR SIGN-IN';
-  $('#auth-title').innerHTML = needsSetup
-    ? t('نام کاربری و گذرواژهٔ مدیر را تعیین کنید', 'Configure BBG Operator Credentials')
-    : t('به پنل مدیریت BBG خوش آمدید', 'Welcome back to BBG Control Plane');
-  $('#auth-submit-fa').textContent = needsSetup ? 'راه‌اندازی پنل' : 'ورود به پنل';
-  $('#auth-submit-en').textContent = needsSetup ? 'INITIALIZE PANEL' : 'SIGN IN';
-  $('#auth-env').textContent = 'BBG · v' + (S.boot.app.version || '2.0.0');
+  stopTimers();
+  const setup = Boolean(S.boot?.needsSetup);
+  $('#auth-title').textContent = setup ? L('ساخت حساب مدیر', 'Create the admin account') : L('ورود به پنل', 'Sign in');
+  $('#auth-hint').textContent = setup ? L('این اولین ورود است؛ نام کاربری و رمز مدیر را انتخاب کنید.', 'First run: choose the admin username and password.') : '';
+  $('#l-user').textContent = L('نام کاربری', 'Username');
+  $('#l-pass').textContent = L('رمز عبور', 'Password');
+  $('#l-pass2').textContent = L('تکرار رمز عبور', 'Repeat password');
+  $('#auth-pass2-wrap').hidden = !setup;
+  $('#auth-key-wrap').hidden = !(setup && S.boot?.setupKeyRequired);
+  $('#l-key').textContent = L('کلید راه‌اندازی (در لاگ سرور چاپ شده)', 'Setup key (printed in the server log)');
+  $('#auth-pass').autocomplete = setup ? 'new-password' : 'current-password';
+  $('#auth-submit').textContent = setup ? L('ساخت حساب و ورود', 'Create & sign in') : L('ورود', 'Sign in');
+  $('#auth-lang').textContent = S.lang === 'fa' ? 'EN' : 'FA';
+  $('#auth-error').hidden = true;
+  setTimeout(() => $('#auth-user').focus(), 30);
 }
 
 async function submitAuth(ev) {
   ev.preventDefault();
-  const errBox = $('#auth-err');
-  errBox.hidden = true;
+  const err = $('#auth-error');
   const username = $('#auth-user').value.trim();
   const password = $('#auth-pass').value;
-  const needsSetup = S.boot.needsSetup;
+  const setup = Boolean(S.boot?.needsSetup);
+  const fail = (m) => { err.textContent = m; err.hidden = false; };
+  if (setup && password !== $('#auth-pass2').value) return fail(L('تکرار رمز یکسان نیست.', 'Passwords do not match.'));
+  if (setup && password.length < 10) return fail(L('رمز باید حداقل ۱۰ حرف باشد.', 'Use at least 10 characters.'));
+  $('#auth-submit').disabled = true;
   try {
-    if (needsSetup) {
-      if (password !== $('#auth-pass2').value) throw new Error('passwords do not match');
-      if (password.length < 8) throw new Error('password must be at least 8 characters');
-      await api('/api/setup', { method: 'POST', body: { username, password } });
-    } else {
-      await api('/api/login', { method: 'POST', body: { username, password } });
-    }
-    await loadState();
-  } catch (err) {
-    errBox.hidden = false;
-    errBox.textContent = err.message;
+    await api(setup ? '/api/setup' : '/api/login', { method: 'POST', body: { username, password, setupKey: $('#auth-key').value.trim() } });
+    S.boot = await api('/api/bootstrap');
+    $('#auth-pass').value = '';
+    await enterApp();
+  } catch (e) {
+    fail(e.status === 429 ? L('تلاش‌های زیاد؛ چند دقیقه بعد دوباره امتحان کنید.', 'Too many attempts; try again in a few minutes.')
+      : e.status === 401 ? L('نام کاربری یا رمز اشتباه است.', 'Wrong username or password.') : e.message);
+  } finally {
+    $('#auth-submit').disabled = false;
   }
 }
 
-/* ── Boot & Refresh ────────────────────────────────────────────────────── */
-
-const PANE_RENDERERS = {
-  dashboard: () => renderDashboard(),
-  easy: () => renderEasy(),
-  railynx: () => renderRailynx(),
-  inbounds: () => renderInbounds(),
-  users: () => renderUsers(),
-  delivery: () => renderDelivery(),
-  telegram: () => renderTelegram(),
-  cores: () => renderCores(),
-  settings: () => renderSettings(),
-};
-
-function renderPane(id = S.tab) {
-  const run = PANE_RENDERERS[id];
-  if (run) run();
+async function refreshState() {
+  S.state = await api('/api/state');
+  return S.state;
 }
 
-function renderAll() {
+async function enterApp() {
+  await refreshState();
+  if (S.state.settings?.theme) applyTheme(S.state.settings.theme);
+  if (S.state.settings?.lang) applyLang(S.state.settings.lang);
   $('#boot').hidden = true;
   $('#auth').hidden = true;
   $('#app').hidden = false;
-  if (!S.updateTimer) {
-    checkUpdateQuiet();
-    S.updateTimer = setInterval(checkUpdateQuiet, 30 * 60 * 1000);
-  }
-  renderStatusBar();
-  renderNav();
-  $$('.tab-pane').forEach((pane) => { pane.hidden = pane.dataset.pane !== S.tab; });
-  renderPane(S.tab);
+  const fromHash = (location.hash || '').slice(1);
+  go(PAGES.some((p) => p.id === fromHash) ? fromHash : 'overview');
 }
 
-async function loadState() {
-  S.state = await api('/api/state');
-  applyTheme(S.state.settings.theme || 'dark');
-  applyLang(S.state.settings.lang || 'fa');
-  renderAll();
-  if (S.tab === 'cores') startLogPolling();
+function bindEvents() {
+  document.addEventListener('click', (ev) => {
+    const el = ev.target.closest('[data-act]');
+    if (!el || el.tagName === 'INPUT') return;
+    ev.preventDefault();
+    onAction(el.dataset.act, el.dataset.arg, el);
+  });
+  document.addEventListener('change', (ev) => {
+    const el = ev.target;
+    if (el.matches('input[type=checkbox][data-act]')) return onAction(el.dataset.act, el.dataset.arg, el);
+    if (el.id === 'delivery-user') { S.deliveryUser = el.value; return render(); }
+    if (el.id === 'restore-file') {
+      const file = el.files?.[0];
+      if (!file) return null;
+      file.text().then((text) => {
+        let body;
+        try { body = JSON.parse(text); } catch { return toast(L('فایل JSON معتبر نیست', 'Not a valid JSON file'), 'warn'); }
+        return withState(async () => {
+          const r = await api('/api/restore', { method: 'POST', body });
+          toast(L('بازیابی شد؛ دوباره وارد شوید', 'Restored; please sign in again'));
+          setTimeout(() => { location.href = r.panelUrl || location.href; location.reload(); }, 1200);
+          return r;
+        });
+      });
+    }
+    if (el.name === 'pick' && el.form?.id === 'scan-form') el.form.link.value = el.value;
+    return null;
+  });
+  document.addEventListener('input', (ev) => {
+    if (ev.target.closest('#content form')) S.dirty = true;
+    if (ev.target.id === 'user-search') {
+      S.filter = ev.target.value;
+      const pos = ev.target.selectionStart;
+      render();
+      const box = $('#user-search');
+      box.focus();
+      try { box.setSelectionRange(pos, pos); } catch { /* ignore */ }
+    }
+  });
+  document.addEventListener('submit', (ev) => {
+    if (ev.target.id === 'auth-form') return submitAuth(ev);
+    ev.preventDefault();
+    return onSubmit(ev.target);
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && !$('#modal').hidden) closeModal();
+  });
+  $('#modal').addEventListener('click', (ev) => { if (ev.target.id === 'modal') closeModal(); });
+  $('#auth-lang').addEventListener('click', () => { applyLang(S.lang === 'fa' ? 'en' : 'fa'); showAuth(); });
+  setInterval(async () => {
+    if (document.hidden || S.busy || !S.state || !$('#modal').hidden) return;
+    if (!['overview', 'cores', 'telegram'].includes(S.page)) return;
+    const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#content form');
+    try {
+      await refreshState();
+      if (!S.dirty && !typing) render();
+    } catch (err) { if (err.status === 401) showAuth(); }
+  }, 15000);
 }
 
 async function boot() {
-  document.title = 'BBG · Control Plane — SANDBAAD';
-  applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
-  applyLang(localStorage.getItem(LANG_KEY) || 'fa');
-
-  $('#btn-lang')?.addEventListener('click', () => {
-    const next = document.documentElement.dataset.lang === 'fa' ? 'en' : 'fa';
-    applyLang(next);
-    if (S.state) { S.state.settings.lang = next; }
-    renderAll();
-  });
-  $('#auth-lang')?.addEventListener('click', () => {
-    applyLang(document.documentElement.dataset.lang === 'fa' ? 'en' : 'fa');
-    if (S.boot) showAuth();
-  });
-  $$('.t-pick').forEach((btn) => btn.addEventListener('click', () => applyTheme(btn.dataset.th)));
-  $('#auth-form')?.addEventListener('submit', submitAuth);
-  $('#modal-close')?.addEventListener('click', closeModal);
-  $('#modal')?.addEventListener('click', (ev) => { if (ev.target.id === 'modal') closeModal(); });
-  $('#btn-apply')?.addEventListener('click', () => onAction('apply'));
-  $('#btn-reload')?.addEventListener('click', () => loadState().catch((err) => toast(err.message, 'warn')));
-  $('#btn-logout')?.addEventListener('click', async () => {
-    await api('/api/logout', { method: 'POST' }).catch(() => {});
-    location.reload();
-  });
-
-  // Global top search bar
-  $('#global-search')?.addEventListener('input', (ev) => {
-    S.searchQuery = ev.target.value || '';
-    if (S.tab === 'users') renderUsers();
-    else if (S.tab === 'inbounds') renderInbounds();
-    else if (S.searchQuery.trim()) {
-      const q = S.searchQuery.trim().toLowerCase();
-      const matchUser = (S.state?.users || []).some((u) => u.name.toLowerCase().includes(q));
-      if (matchUser) switchTab('users');
-      else switchTab('inbounds');
-    }
-  });
-
-  document.addEventListener('change', (ev) => {
-    if (ev.target.id !== 'restore-file') return;
-    const file = ev.target.files?.[0];
-    if (!file) return;
-    file.text().then((text) => withState(async () => {
-      const res = await api('/api/restore', { method: 'POST', body: JSON.parse(text) });
-      toast(tt('نسخهٔ پشتیبان بازیابی شد', 'Backup restored'));
-      return res;
-    })).catch((err) => toast(err.message, 'warn'));
-  });
-
+  let lang = 'fa';
+  let theme = 'dark';
+  try { lang = localStorage.getItem('bbg-lang') || lang; theme = localStorage.getItem('bbg-theme') || theme; } catch { /* ignore */ }
+  applyLang(lang);
+  applyTheme(theme);
+  $('#boot-text').textContent = L('در حال اتصال به پنل…', 'Connecting to the panel…');
+  bindEvents();
   try {
     S.boot = await api('/api/bootstrap');
   } catch (err) {
-    $('#boot').innerHTML = `<div class="card"><div class="err">${esc(err.message)}</div></div>`;
+    $('#boot-text').textContent = `${L('پنل در دسترس نیست', 'Panel unreachable')}: ${err.message}`;
     return;
   }
-
-  if (!S.boot.loggedIn) {
-    showAuth();
-    return;
-  }
-  try {
-    await loadState();
-  } catch {
-    showAuth();
-  }
-
-  S.refreshTimer = setInterval(async () => {
-    if (document.hidden || S.busy || !S.state) return;
-    if (['telegram', 'cores', 'dashboard'].includes(S.tab)) {
-      try {
-        S.state = await api('/api/state');
-        renderStatusBar();
-        if (S.tab === 'dashboard') renderDashboard();
-        if (S.tab === 'telegram') renderTelegram();
-      } catch { /* ignore */ }
-    }
-  }, 15000);
+  if (S.boot.settings?.lang) applyLang(S.boot.settings.lang);
+  if (S.boot.settings?.theme) applyTheme(S.boot.settings.theme);
+  if (!S.boot.loggedIn) return showAuth();
+  try { await enterApp(); } catch { showAuth(); }
 }
 
 boot();

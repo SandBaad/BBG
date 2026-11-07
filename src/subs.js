@@ -473,13 +473,8 @@ export function singboxJson(doc, user) {
       final: 'cloudflare',
     },
     inbounds: [
-      {
-        type: 'mixed',
-        tag: 'mixed-in',
-        listen: '127.0.0.1',
-        listen_port: 2080,
-        tcp_fast_open: true,
-      },
+      { type: 'tun', tag: 'tun-in', address: ['172.19.0.1/30'], auto_route: true, strict_route: true, stack: 'mixed' },
+      { type: 'mixed', tag: 'mixed-in', listen: '127.0.0.1', listen_port: 2080 },
     ],
     outbounds: [
       ...groupOutbounds,
@@ -520,7 +515,7 @@ export function clashYaml(doc, user) {
   lines.push(
     'port: 7890',
     'socks-port: 7891',
-    'allow-lan: true',
+    'allow-lan: false',
     'mode: rule',
     'log-level: warning',
     'unified-delay: true',

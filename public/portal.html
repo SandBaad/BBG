@@ -1,191 +1,146 @@
 <!doctype html>
-<html lang="fa" dir="rtl" data-lang="fa" data-theme="dark">
+<html lang="fa" dir="rtl">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
-<title>BBG · SANDBAAD — Subscriber Portal</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%2306b6d4'/%3E%3Cstop offset='100%25' stop-color='%2310b981'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%23070b14'/%3E%3Cpath d='M8 8h9a4.5 4.5 0 0 1 3.2 7.6A4.8 4.8 0 0 1 17.5 24H8V8zm3.2 6.4h5.2a1.8 1.8 0 0 0 0-3.6h-5.2v3.6zm0 6.8h5.8a2 2 0 0 0 0-4h-5.8v4z' fill='url(%23g)'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/style.css?v=2.0.0">
-<link rel="stylesheet" href="/extra.css?v=2.0.0">
+<meta name="referrer" content="no-referrer">
+<meta name="portal-data" content="">
+<meta name="panel-base" content="">
+<title>اشتراک من</title>
 <style>
-  .user-links,.link-row{max-width:100%;min-width:0}
-  .link-row .lk-uri{
-    white-space:normal;overflow:visible;text-overflow:clip;
-    overflow-wrap:anywhere;word-break:break-all;min-width:0;
-  }
-  .portal-wrap{max-width:1120px;margin:28px auto;padding:0 18px;position:relative;z-index:2}
+@font-face { font-family: 'Vazirmatn'; src: url('/fonts/Vazirmatn-Regular.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Vazirmatn'; src: url('/fonts/Vazirmatn-Bold.woff2') format('woff2'); font-weight: 600 800; font-display: swap; }
+@font-face { font-family: 'JetBrains Mono'; src: url('/fonts/JetBrainsMono-Regular.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+:root { --bg:#0c0e11; --surface:#151920; --surface-2:#1b2029; --line:#252b35; --ink:#e7eaee; --ink-2:#b4bbc5; --muted:#7d8592; --accent:#3fd0b4; --accent-ink:#04221c; --ok:#44c27a; --warn:#e0a83a; --bad:#f06a5f; color-scheme: dark; }
+@media (prefers-color-scheme: light) { :root { --bg:#f4f5f7; --surface:#fff; --surface-2:#f3f4f6; --line:#e2e5ea; --ink:#12161c; --ink-2:#3b434e; --muted:#69717d; --accent:#0f9c84; --accent-ink:#fff; --ok:#1f9a57; --warn:#b7791f; --bad:#d64538; color-scheme: light; } }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.6 'Vazirmatn', ui-sans-serif, system-ui, sans-serif; }
+.wrap { max-width: 720px; margin: 0 auto; padding: 24px max(16px, env(safe-area-inset-right, 0px)) 48px max(16px, env(safe-area-inset-left, 0px)); display: flex; flex-direction: column; gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; min-width: 0; }
+.top { display: flex; align-items: center; gap: 10px; }
+.mark { width: 34px; height: 34px; border-radius: 9px; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font: 700 12px/1 'JetBrains Mono', ui-monospace, monospace; }
+h1 { margin: 0; font-size: 19px; }
+.muted { color: var(--muted); font-size: 12.5px; }
+.pill { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px; border-radius: 99px; font-size: 12px; background: var(--surface-2); }
+.pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.pill.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.stat b { display: block; font-weight: 700; font-size: 18px; line-height: 1.3; font-variant-numeric: tabular-nums; }
+.meter { height: 7px; background: var(--surface-2); border-radius: 99px; overflow: hidden; margin-top: 12px; }
+.meter i { display: block; height: 100%; background: var(--accent); }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface-2); color: var(--ink); cursor: pointer; font: inherit; font-size: 13px; text-decoration: none; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.seg .btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.line { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; min-width: 0; }
+.line code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: ltr; text-align: left; font: 12px/1.5 'JetBrains Mono', ui-monospace, monospace; color: var(--ink-2); }
+.line small { white-space: nowrap; color: var(--muted); }
+.qr { background: #fff; border-radius: 8px; padding: 8px; width: 200px; height: 200px; margin: 6px auto 0; }
+.qr svg { width: 100%; height: 100%; display: block; }
+.apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 520px) { .stats { grid-template-columns: 1fr 1fr; } }
 </style>
 </head>
 <body>
-<div class="ambient-stage" aria-hidden="true">
-  <div class="orb orb-cyan"></div>
-  <div class="orb orb-amber"></div>
-  <div class="orb orb-emerald"></div>
-  <div class="ambient-grid"></div>
-</div>
-
-<div class="portal-wrap">
-  <header class="glass-card" style="margin-bottom:18px">
-    <div class="auth-brand-row">
-      <div class="brand-lockup">
-        <div class="brand-logo-badge">BBG</div>
-        <div>
-          <h1 class="brand-title">BBG <span class="brand-sub-badge">SANDBAAD</span></h1>
-          <p class="brand-caption">
-            <span class="fa">پورتال اختصاصی اشتراک شما — لینک‌های ضد-فیلتر، حجم مصرفی و QR</span>
-            <span class="en">Private Subscriber Portal — Hardened Anti-DPI Links, Quota &amp; QR</span>
-          </p>
-        </div>
-      </div>
-      <div class="top-controls">
-        <span class="pill-chip emerald mono">SUBSCRIBER PORTAL</span>
-        <button class="icon-pill" id="lang" type="button">EN</button>
-        <div class="theme-grp">
-          <button class="icon-pill t-pick" data-th="light" type="button">LIGHT</button>
-          <button class="icon-pill t-pick" data-th="dark" type="button">DARK</button>
-        </div>
-      </div>
+<div class="wrap">
+  <div class="top"><div class="mark">BBG</div><div><h1 id="name">…</h1><div class="muted" id="sub">BBG · SANDBAAD</div></div><span style="margin-inline-start:auto" id="status"></span></div>
+  <div class="card" id="usage-card" hidden>
+    <div class="stats">
+      <div class="stat"><span class="muted" data-t="used">مصرف</span><b id="used">—</b></div>
+      <div class="stat"><span class="muted" data-t="left">باقی‌مانده</span><b id="left">—</b></div>
+      <div class="stat"><span class="muted" data-t="expires">انقضا</span><b id="expires">—</b></div>
     </div>
-  </header>
-
-  <div id="content">
-    <div class="glass-card"><p class="kicker">…</p><div class="meter"><i style="width:40%"></i></div></div>
+    <div class="meter" id="meter" hidden><i id="meter-bar"></i></div>
   </div>
-
-  <footer class="colophon" style="margin-top:24px">
-    <span class="mono">BBG · MAINTAINED BY SANDBAAD</span>
-    <span class="mono">LOW-LATENCY ANTI-DPI ENGINE</span>
-  </footer>
+  <div class="card" id="sub-card" hidden>
+    <strong data-t="subTitle">لینک اشتراک</strong>
+    <div class="muted" data-t="subHint">این لینک را در برنامهٔ VPN خود «اضافه کردن از لینک/اشتراک» کنید؛ خودکار به‌روز می‌شود.</div>
+    <div class="seg" id="formats"></div>
+    <div class="qr" id="qr"></div>
+    <div class="line"><code id="sub-url"></code><button class="btn primary" type="button" id="copy-sub" data-t="copy">کپی</button></div>
+  </div>
+  <div class="card" id="links-card" hidden>
+    <strong data-t="linksTitle">کانفیگ‌های تکی</strong>
+    <div id="links"></div>
+  </div>
+  <div class="card" id="msg" hidden></div>
+  <div class="card">
+    <strong data-t="apps">برنامه‌های پیشنهادی</strong>
+    <div class="apps" style="margin-top:10px">
+      <a class="btn" href="https://github.com/2dust/v2rayNG/releases" target="_blank" rel="noopener noreferrer">v2rayNG · Android</a>
+      <a class="btn" href="https://github.com/hiddify/hiddify-app/releases" target="_blank" rel="noopener noreferrer">Hiddify</a>
+      <a class="btn" href="https://github.com/SagerNet/sing-box/releases" target="_blank" rel="noopener noreferrer">sing-box</a>
+      <a class="btn" href="https://github.com/2dust/v2rayN/releases" target="_blank" rel="noopener noreferrer">v2rayN · Windows</a>
+    </div>
+  </div>
+  <div style="text-align:center"><button class="btn" type="button" id="lang">English</button></div>
 </div>
-
-<script src="/js/qrcode.js?v=2.0.0"></script>
-<script type="module">
-const token = location.pathname.split('/').filter(Boolean)[1] || '';
-const state = { data: null };
-
-const $ = (s) => document.querySelector(s);
-const t = (fa, en) => `<span class="fa">${fa}</span><span class="en">${en}</span>`;
-const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const icon = (n, cls = 'ic') => `<svg class="${cls}"><use href="#i-${n}"/></svg>`;
-
-function setLang(lang) {
-  document.documentElement.dataset.lang = lang;
-  document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
-  $('#lang').textContent = lang === 'fa' ? 'EN' : 'فا';
-  localStorage.setItem('bbg-lang', lang);
-  if (state.data) render();
-}
-
-function setTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  document.querySelectorAll('.t-pick').forEach((b) => b.classList.toggle('active', b.dataset.th === theme));
-  localStorage.setItem('bbg-theme', theme);
-}
-
-function qr(text) {
-  try {
-    const q = qrcode(0, 'M');
-    q.addData(text); q.make();
-    return `<div class="qrbox qr">${q.createSvgTag({ cellSize: 2, margin: 4, scalable: true })}</div>`;
-  } catch { return ''; }
-}
-
-function render() {
-  const d = state.data;
-  const percent = d.quotaGb ? Math.min(100, Math.round((d.usageGb / d.quotaGb) * 100)) : 0;
-  const subUrl = `${location.origin}/sub/${token}`;
-  $('#content').innerHTML = `
-    <div class="cols">
-      <div class="glass-card">
-        <p class="kicker">${icon('users')}${t('وضعیت اشتراک شما', 'YOUR SUBSCRIPTION')}</p>
-        <div class="spread" style="align-items:center">
-          <h2 class="head" style="font-size:26px;margin:0">${esc(d.name)}</h2>
-          <div class="chips">
-            <span class="badge ${d.status === 'active' ? 'ok' : 'bad'}">${esc(d.status)}</span>
-            <span class="chip">${d.links.length} ${t('پروتکل فعال', 'ACTIVE LINKS')}</span>
-          </div>
-        </div>
-        <table class="tbl" style="margin-top:14px">
-          <tbody>
-            <tr><th>${t('مصرف کل', 'USED TRAFFIC')}</th><td class="mono">${d.usageGb} GB</td></tr>
-            <tr><th>${t('سهمیه کل', 'TOTAL QUOTA')}</th><td class="mono">${d.quotaGb ? d.quotaGb + ' GB' : '∞'}</td></tr>
-            <tr><th>${t('تاریخ انقضا', 'EXPIRATION')}</th><td class="mono">${d.expiresAt ? new Date(d.expiresAt).toISOString().slice(0, 10) : '∞'}</td></tr>
-          </tbody>
-        </table>
-        ${d.quotaGb ? `<div class="meter" style="margin-top:12px"><i style="width:${percent}%"></i></div>` : ''}
-        <div class="actions" style="margin-top:16px">
-          <a class="btn primary sm-btn" href="${esc(subUrl)}" target="_blank" rel="noopener">${icon('download', 'ic ic-sm')}${t('لینک اشتراک (Base64)', 'SUBSCRIPTION LINK')}</a>
-          <a class="btn ghost sm-btn" href="${esc(subUrl)}/singbox" target="_blank" rel="noopener"><span class="mono">sing-box JSON</span></a>
-          <a class="btn ghost sm-btn" href="${esc(subUrl)}/xray" target="_blank" rel="noopener"><span class="mono">Xray JSON</span></a>
-          <a class="btn ghost sm-btn" href="${esc(subUrl)}/clash" target="_blank" rel="noopener"><span class="mono">Clash YAML</span></a>
-          <button class="btn ghost sm-btn" id="copy-sub" type="button">${icon('copy', 'ic ic-sm')}${t('کپی آدرس', 'COPY URL')}</button>
-        </div>
-        <p class="hint">${t('آدرس اشتراک را در v2rayNG، Hiddify، sing-box یا Clash Verge وارد کنید تا تمام پروتکل‌های بهینه‌شده خودکار بروزرسانی شوند.', 'Import the subscription URL in v2rayNG, Hiddify, sing-box, or Clash Verge for automatic multi-protocol updates.')}</p>
-      </div>
-
-      <div class="glass-card card-subtle">
-        <p class="kicker">${icon('qr')}${t('اسکن سریع QR', 'QUICK QR IMPORT')}</p>
-        <div class="qr-center">
-          ${qr(subUrl)}
-          <p class="code-line" style="margin-top:10px;font-size:11px;max-width:100%;overflow-wrap:anywhere">${esc(subUrl)}</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="glass-card" style="margin-top:16px">
-      <p class="kicker">${icon('link')}${t('کانفیگ‌های مستقیم (تک‌پروتکل)', 'DIRECT PROTOCOL NODES')}</p>
-      <div class="stack-sm">
-        ${d.links.map((l) => `
-          <div class="link-row">
-            <span class="lk-name">${esc(l.protocol.toUpperCase())} · ${esc(l.transport)} · ${esc(l.core)}</span>
-            <span class="lk-uri" dir="ltr">${esc(l.uri)}</span>
-            <button class="mini" data-copy="${esc(l.uri)}" type="button">${icon('copy', 'ic ic-sm')}</button>
-            <button class="mini" data-qr="${esc(l.uri)}" type="button">${icon('qr', 'ic ic-sm')}</button>
-          </div>`).join('')}
-      </div>
-    </div>
-
-    <div class="glass-card" style="margin-top:16px" id="qr-card" hidden>
-      <p class="kicker">${icon('qr')}QR</p>
-      <div class="qr-center" id="qr-slot"></div>
-    </div>`;
-}
-
-document.addEventListener('click', (e) => {
-  const copyBtn = e.target.closest('[data-copy]');
-  if (copyBtn) { navigator.clipboard?.writeText(copyBtn.dataset.copy); return; }
-  const qrBtn = e.target.closest('[data-qr]');
-  if (qrBtn) {
-    $('#qr-card').hidden = false;
-    $('#qr-slot').innerHTML = qr(qrBtn.dataset.qr);
-    $('#qr-card').scrollIntoView({ behavior: 'smooth' });
-    return;
+<div class="toast" id="toast" hidden></div>
+<script data-inline="qrcode"></script>
+<script>
+(function () {
+  var T = {
+    fa: { used: 'مصرف', left: 'باقی‌مانده', expires: 'انقضا', subTitle: 'لینک اشتراک', subHint: 'این لینک را در برنامهٔ VPN خود «اضافه کردن از لینک/اشتراک» کنید؛ خودکار به‌روز می‌شود.', copy: 'کپی', linksTitle: 'کانفیگ‌های تکی', apps: 'برنامه‌های پیشنهادی', copied: 'کپی شد', unlimited: 'نامحدود', never: 'بدون انقضا', days: ' روز', active: 'فعال', disabled: 'غیرفعال', expired: 'منقضی', quota: 'حجم تمام شده', inactive: 'اشتراک فعال نیست؛ با مدیر تماس بگیرید.', error: 'اطلاعات اشتراک در دسترس نیست.', title: 'اشتراک من', lang: 'English' },
+    en: { used: 'Used', left: 'Remaining', expires: 'Expires', subTitle: 'Subscription link', subHint: 'Add this link in your VPN app as a subscription; it updates by itself.', copy: 'Copy', linksTitle: 'Single configs', apps: 'Recommended apps', copied: 'Copied', unlimited: 'Unlimited', never: 'Never', days: ' days', active: 'Active', disabled: 'Disabled', expired: 'Expired', quota: 'Out of data', inactive: 'This subscription is not active; contact the admin.', error: 'Subscription details are unavailable.', title: 'My subscription', lang: 'فارسی' },
+  };
+  var lang = 'fa';
+  try { lang = localStorage.getItem('bbg-portal-lang') || lang; } catch (e) {}
+  var data = null, fmt = 'base64';
+  var FMT = [['base64', ''], ['singbox', '/singbox'], ['xray', '/xray'], ['clash', '/clash']];
+  function $(id) { return document.getElementById(id); }
+  function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function bytes(n) { n = Number(n) || 0; if (n < 1024) return n + ' B'; var u = ['KB', 'MB', 'GB', 'TB'], x = n / 1024, i = 0; while (x >= 1024 && i < 3) { x /= 1024; i++; } return x.toFixed(x >= 100 ? 0 : x >= 10 ? 1 : 2) + ' ' + u[i]; }
+  function toast(m) { var t = $('toast'); t.textContent = m; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(function () { t.hidden = true; }, 2200); }
+  function copy(text) {
+    var ok = function () { toast(T[lang].copied); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok, function () { fallback(text); ok(); });
+    else { fallback(text); ok(); }
   }
-  if (e.target.closest('#copy-sub')) navigator.clipboard?.writeText(location.origin + '/sub/' + token);
-});
-
-setTheme(localStorage.getItem('bbg-theme') || 'dark');
-setLang(localStorage.getItem('bbg-lang') || 'fa');
-$('#lang').addEventListener('click', () => setLang(document.documentElement.dataset.lang === 'fa' ? 'en' : 'fa'));
-document.querySelectorAll('.t-pick').forEach((b) => b.addEventListener('click', () => setTheme(b.dataset.th)));
-
-async function injectSprite() {
-  try {
-    const res = await fetch('/sprite.svg');
-    const text = await res.text();
-    document.body.insertAdjacentHTML('afterbegin', text.replace('<svg ', '<svg hidden aria-hidden="true" '));
-  } catch { /* ignore */ }
-}
-
-await injectSprite();
-fetch(`/u/${token}?json=1`).then((r) => r.json()).then((data) => {
-  if (data.error) throw new Error(data.error);
-  state.data = data;
+  function fallback(text) { var a = document.createElement('textarea'); a.value = text; document.body.appendChild(a); a.select(); try { document.execCommand('copy'); } catch (e) {} a.remove(); }
+  function qr(text) { try { var q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 3, margin: 0, scalable: true }); } catch (e) { return ''; } }
+  function subUrl() { var f = FMT.filter(function (x) { return x[0] === fmt; })[0]; return data.subUrl + (f ? f[1] : ''); }
+  function render() {
+    var t = T[lang];
+    document.documentElement.lang = lang; document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr'; document.title = t.title;
+    [].forEach.call(document.querySelectorAll('[data-t]'), function (el) { el.textContent = t[el.getAttribute('data-t')]; });
+    $('lang').textContent = t.lang;
+    if (!data) return;
+    $('name').textContent = data.name;
+    var cls = { active: 'ok', quota: 'warn', expired: 'bad', disabled: 'bad' }[data.status] || '';
+    $('status').innerHTML = '<span class="pill ' + cls + '">' + esc(t[data.status] || data.status) + '</span>';
+    var used = data.usage.total, q = data.quotaBytes;
+    $('usage-card').hidden = false;
+    $('used').innerHTML = '<bdi dir="ltr">' + esc(bytes(used)) + '</bdi>';
+    $('left').innerHTML = q ? '<bdi dir="ltr">' + esc(bytes(Math.max(0, q - used))) + '</bdi>' : esc(t.unlimited);
+    if (data.expiresAt) { var d = Math.ceil((data.expiresAt - Date.now()) / 864e5); $('expires').textContent = d > 0 ? d + t.days : t.expired; } else $('expires').textContent = t.never;
+    $('meter').hidden = !q; if (q) $('meter-bar').style.width = Math.min(100, used / q * 100).toFixed(1) + '%';
+    var active = data.status === 'active';
+    $('sub-card').hidden = !active; $('links-card').hidden = !active || !data.links.length;
+    $('msg').hidden = active; $('msg').textContent = t.inactive;
+    if (!active) return;
+    $('formats').innerHTML = FMT.map(function (f) { return '<button class="btn" type="button" data-f="' + f[0] + '" aria-pressed="' + (f[0] === fmt) + '">' + f[0] + '</button>'; }).join('');
+    $('sub-url').textContent = subUrl(); $('qr').innerHTML = qr(subUrl());
+    $('links').innerHTML = data.links.map(function (l, i) { return '<div class="line"><small>' + esc(l.short || l.label) + '</small><code>' + esc(l.uri) + '</code><button class="btn" type="button" data-copy="' + i + '">' + t.copy + '</button></div>'; }).join('');
+  }
+  document.addEventListener('click', function (e) {
+    var f = e.target.closest('[data-f]'); if (f) { fmt = f.getAttribute('data-f'); render(); return; }
+    var c = e.target.closest('[data-copy]'); if (c) { copy(data.links[Number(c.getAttribute('data-copy'))].uri); return; }
+    if (e.target.id === 'copy-sub') copy(subUrl());
+    if (e.target.id === 'lang') { lang = lang === 'fa' ? 'en' : 'fa'; try { localStorage.setItem('bbg-portal-lang', lang); } catch (x) {} render(); }
+  });
+  var src = (document.querySelector('meta[name="portal-data"]') || {}).content;
   render();
-}).catch((err) => {
-  $('#content').innerHTML = `<div class="glass-card"><div class="err">${esc(err.message)}</div></div>`;
-});
+  if (window.__PORTAL_DATA) { data = window.__PORTAL_DATA; render(); return; }
+  fetch(src || (location.pathname + '?json=1'), { credentials: 'omit' }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (d) { data = d; render(); })
+    .catch(function () { $('msg').hidden = false; $('msg').textContent = T[lang].error; });
+})();
 </script>
 </body>
 </html>

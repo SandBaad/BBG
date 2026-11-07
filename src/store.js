@@ -9,7 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { DATA_FILE, DATA_DIR, ensureDirs } from './env.js';
-import { DEFAULT_INBOUNDS, presetById } from './catalog.js';
+import { DEFAULT_INBOUNDS, presetById, LEGACY_SHORT_IDS, randomShortIds } from './catalog.js';
+import { legacySubToken, randomSubToken } from './auth.js';
 
 const SCHEMA = 4;
 const listeners = new Set();
@@ -64,8 +65,8 @@ function defaults() {
           adTag: '',
           preferIpv6: false,
         },
-        socks: { enabled: false, user: 'bbg', pass: hex(6) },
-        http: { enabled: false, user: 'bbg', pass: hex(6) },
+        socks: { enabled: false, user: `u${hex(3)}`, pass: hex(8) },
+        http: { enabled: false, user: `u${hex(3)}`, pass: hex(8) },
         web: { enabled: false },
       },
       cores: {
@@ -99,11 +100,22 @@ function migrate(raw) {
     },
     cores: { ...base.settings.cores, ...((raw.settings || {}).cores || {}) },
   };
-  out.settings.brand = 'BBG';
-  out.settings.tag = 'CORE';
-  out.users = Array.isArray(raw.users) ? raw.users.map(normalizeUser) : [];
+  if (!out.settings.brand) out.settings.brand = 'BBG';
+  if (!out.settings.tag) out.settings.tag = 'CORE';
+  if (out.admin && !out.admin.ver) out.admin.ver = 1;
+  // v2.0 links were HMAC(server secret, user id); keep them working by storing that value once.
+  out.users = Array.isArray(raw.users)
+    ? raw.users.map((u) => normalizeUser({ ...u, subToken: u.subToken || legacySubToken(out.secrets.server, u.id) }))
+    : [];
+  for (const t of ['socks', 'http']) {
+    const p = out.settings.telegram[t];
+    if (!p.pass || p.pass.length < 8) p.pass = hex(8);
+  }
   if (Array.isArray(raw.inbounds) && raw.inbounds.length) {
     const valid = raw.inbounds.filter((ib) => ib && presetById(ib.presetId));
+    for (const ib of valid) {
+      if (ib.params && 'shortIds' in ib.params && LEGACY_SHORT_IDS.has(String(ib.params.shortIds))) ib.params.shortIds = randomShortIds();
+    }
     out.inbounds = valid.length ? valid : DEFAULT_INBOUNDS();
   } else {
     out.inbounds = DEFAULT_INBOUNDS();
@@ -134,6 +146,7 @@ export function normalizeUser(input) {
       ss256: input.secrets?.ss256 || crypto.randomBytes(32).toString('base64'),
     },
     disabledReason: input.disabledReason || '',
+    subToken: input.subToken || randomSubToken(),
   };
   return user;
 }
@@ -240,7 +253,14 @@ export function publicBase(settings, fallbackHost = '') {
 }
 
 export function exportBackup() {
-  return JSON.stringify({ exportedAt: new Date().toISOString(), brand: 'BBG', maintainer: 'SANDBAAD', doc: get() }, null, 2);
+  return JSON.stringify({ exportedAt: new Date().toISOString(), edition: 'server', doc: get() });
+}
+
+/** One-time key required by /api/setup when no admin exists (printed in the log). */
+let SETUP_KEY = '';
+export function setupKey() {
+  if (!SETUP_KEY) SETUP_KEY = crypto.randomBytes(9).toString('base64url');
+  return SETUP_KEY;
 }
 
 export function importBackup(text) {
@@ -248,6 +268,10 @@ export function importBackup(text) {
   const incoming = parsed.doc || parsed;
   if (!incoming || typeof incoming !== 'object' || !Array.isArray(incoming.users)) {
     throw new Error('invalid backup file');
+  }
+  // A backup without an admin would reopen first-run setup to anyone.
+  if (!incoming.admin || !incoming.admin.hash || !incoming.secrets || !incoming.secrets.server) {
+    throw new Error('backup has no admin account or secrets');
   }
   doc = migrate(incoming);
   writeNow();

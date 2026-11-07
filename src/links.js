@@ -14,6 +14,10 @@ export function hostFor(inbound, rt) {
   if (inbound.edge === 'http') {
     return { host: rt.publicHost, port: 443, tls: true };
   }
+  if (inbound.udp) {
+    // UDP protocols listen on the host directly (no mux in front of them).
+    return { host: rt.tcpHost || rt.publicHost, port: inbound.port, tls: true };
+  }
   return { host: rt.tcpHost, port: rt.tcpPort, tls: inbound.security !== 'none' };
 }
 
@@ -211,8 +215,8 @@ export function buildUserLinks(doc, user) {
   for (const raw of doc.inbounds || []) {
     const inbound = describeInbound(raw);
     if (!inbound || !inbound.enabled) continue;
-    if (inbound.udp) continue;
     const conn = connectionFor(doc, inbound, user);
+    if (!conn.host || !conn.port) continue;
     if (inbound.protocol === 'shadowsocks') {
       conn.ssPassword = ssClientPassword(doc, inbound, user, conn.extra.method || '2022-blake3-aes-128-gcm');
     }

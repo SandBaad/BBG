@@ -7,6 +7,7 @@
 import { effectiveEnabled } from '../store.js';
 import { describeInbound, edgePath, edgeServiceName } from '../catalog.js';
 import { ssServerKey, legacySsPassword } from './shared.js';
+import { ACCOUNTING_PORT } from './xray.js';
 
 export const SB_CLASH_PORT = 9091;
 export const SB_V2RAY_API_PORT = 10086;
@@ -45,7 +46,7 @@ function tlsBlock(ib, ctx) {
   if (ib.security === 'tls-self' || ib.transport === 'quic') {
     return {
       enabled: true,
-      server_name: params.sni || 'bbg.internal',
+      server_name: params.sni || 'www.apple.com',
       min_version: '1.2',
       alpn: ib.protocol === 'hysteria2' ? ['h3'] : ['h2', 'http/1.1'],
       certificate_path: ctx.certs.certificateFile || undefined,
@@ -75,7 +76,7 @@ function transportBlock(ib) {
   if (ib.transport === 'grpc') {
     return {
       type: 'grpc',
-      service_name: ib.edge === 'http' ? edgeServiceName(ib) : params.serviceName || 'bbg-rpc',
+      service_name: ib.edge === 'http' ? edgeServiceName(ib) : params.serviceName || ib.routeKey,
       idle_timeout: '60s',
       ping_timeout: '15s',
     };
@@ -115,7 +116,7 @@ function usersFor(ib, users, ctx) {
   return [];
 }
 
-export function buildSingboxConfig({ doc, reality, certs, sharedSsPassword, serverSecret, logLevel = 'warn' }) {
+export function buildSingboxConfig({ doc, reality, certs, sharedSsPassword, serverSecret, logLevel = 'warn', accounting = false }) {
   const ctx = { reality, certs, sharedSsPassword, serverSecret };
   const inbounds = [];
   const routes = [];
@@ -131,9 +132,10 @@ export function buildSingboxConfig({ doc, reality, certs, sharedSsPassword, serv
     const base = {
       type: ib.protocol,
       tag: `ib-${ib.id}`,
-      listen: '127.0.0.1',
+      // UDP protocols (Hysteria2) need a public port; TCP ones sit behind the mux.
+      listen: ib.udp ? '::' : '127.0.0.1',
       listen_port: ib.port,
-      tcp_fast_open: true,
+      ...(ib.udp ? {} : { tcp_fast_open: true }),
     };
     let inbound = null;
 
@@ -207,27 +209,32 @@ export function buildSingboxConfig({ doc, reality, certs, sharedSsPassword, serv
     });
   }
 
+  // Per-user hand-off to Xray's loopback accounting inbound (see ACCOUNTING_PORT).
+  const active = accounting && routes.length ? users.filter((u) => effectiveEnabled(u)) : [];
+  const bridge = active.map((u) => ({
+    type: 'vless',
+    tag: `acct-${u.id}`,
+    server: '127.0.0.1',
+    server_port: ACCOUNTING_PORT,
+    uuid: u.secrets.uuid,
+    packet_encoding: 'xudp',
+  }));
+
   const config = {
     log: { level: logLevel, timestamp: true },
     inbounds,
-    outbounds: [
-      { type: 'direct', tag: 'direct', tcp_fast_open: true },
-      { type: 'block', tag: 'block' },
-    ],
+    outbounds: [{ type: 'direct', tag: 'direct', tcp_fast_open: true }, ...bridge],
     route: {
-      auto_detect_interface: true,
       rules: [
         { action: 'sniff', timeout: '300ms' },
         { protocol: 'dns', action: 'hijack-dns' },
+        { domain_suffix: ['localhost', 'local', 'internal'], action: 'reject' },
+        // Resolve names first so the private-range check also covers domains.
+        { action: 'resolve', strategy: 'prefer_ipv4' },
         { ip_is_private: true, action: 'reject' },
+        ...active.map((u) => ({ auth_user: [`u-${u.id}`], outbound: `acct-${u.id}` })),
       ],
       final: 'direct',
-    },
-    experimental: {
-      clash_api: {
-        external_controller: `127.0.0.1:${SB_CLASH_PORT}`,
-        default_mode: 'rule',
-      },
     },
   };
 

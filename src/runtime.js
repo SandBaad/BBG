@@ -40,8 +40,9 @@ export class Runtime extends EventEmitter {
     });
     this.accountant = new TrafficAccountant();
     this.reality = ensureReality();
-    this.certs = ensureCerts();
+    this.certs = ensureCerts(this.tlsNames());
     this.timers = [];
+    this.applyChain = Promise.resolve();
     this.lastActiveSignature = '';
     this.lastStats = { at: 0, totals: { up: 0, down: 0 }, perUser: new Map() };
     this.sys = {};
@@ -157,31 +158,78 @@ export class Runtime extends EventEmitter {
     );
   }
 
-  async apply({ reason = 'manual' } = {}) {
+  /** SNIs of the self-signed TLS inbounds; the certificate is issued for them. */
+  tlsNames() {
+    const names = [];
+    for (const raw of getDoc().inbounds || []) {
+      const ib = describeInbound(raw);
+      if (ib && ib.enabled && ib.security === 'tls-self' && ib.params.sni) names.push(ib.params.sni);
+    }
+    return names;
+  }
+
+  /** Pull Xray's counters into the store (no quota enforcement here). */
+  async collect() {
+    let stats = [];
+    try {
+      stats = await queryStats(XRAY_API_PORT, '', false);
+    } catch {
+      return null;
+    }
+    if (!stats.length) return null;
+    const { perUser, totals } = this.accountant.ingest(stats);
+    this.lastStats = { at: Date.now(), totals, perUser };
+    if (perUser.size) {
+      setDoc((d) => {
+        for (const user of d.users) {
+          const delta = perUser.get(user.id);
+          if (!delta) continue;
+          user.usage.up += delta.up;
+          user.usage.down += delta.down;
+          user.lastSeen = Date.now();
+        }
+      });
+    }
+    return totals;
+  }
+
+  /** Applies are serialized: two at once used to start two Xray processes. */
+  apply(opts = {}) {
+    const run = this.applyChain.then(() => this.applyNow(opts));
+    this.applyChain = run.catch(() => {});
+    return run;
+  }
+
+  async applyNow({ reason = 'manual' } = {}) {
     this._planCache.updatedAt = -1;
     this._routesCache.updatedAt = -1;
     const doc = this.withRuntime(getDoc());
     const serverSecret = doc.secrets.server;
+    this.certs = ensureCerts(this.tlsNames());
 
-    const xray = buildXrayConfig({
-      doc,
-      reality: this.reality,
-      certs: this.certs,
-      serverSecret,
-      logLevel: doc.settings.logLevel || 'warning',
-    });
+    // sing-box hands traffic to Xray for per-user stats when Xray is installed.
+    const accounting = this.cores.xray.available();
     const singbox = buildSingboxConfig({
       doc,
       reality: this.reality,
       certs: this.certs,
       serverSecret,
       logLevel: doc.settings.singboxLogLevel || 'warn',
+      accounting,
+    });
+    const xray = buildXrayConfig({
+      doc,
+      reality: this.reality,
+      certs: this.certs,
+      serverSecret,
+      logLevel: doc.settings.logLevel || 'warning',
+      accounting: accounting && singbox.routes.length > 0,
     });
 
     this.xrayRoutes = xray.routes;
     this.singboxRoutes = singbox.routes;
 
-    const wantXray = doc.settings.cores.xray.enabled && xray.routes.length > 0;
+    const wantXray = (doc.settings.cores.xray.enabled && xray.routes.length > 0) || (accounting && singbox.routes.length > 0);
     const wantSingbox = doc.settings.cores.singbox.enabled && singbox.routes.length > 0;
 
     const overrides = (doc.settings && doc.settings.rawOverride) || {};
@@ -208,8 +256,13 @@ export class Runtime extends EventEmitter {
       notes,
     };
 
-    if (wantXray) {
+    if (wantXray && this.cores.xray.isRunning(xrayConfig)) {
+      // Unchanged config: keep connections alive.
+    } else if (wantXray) {
+      // Save traffic counted since the last tick before the restart zeroes it.
+      await this.collect().catch(() => {});
       let ok = await this.cores.xray.start(xrayConfig);
+      this.accountant.reset();
       if (!ok && xrayConfig !== xray.config) {
         notes.xray = `override rejected: ${coreReason(this.cores.xray.lastError)}`;
         this.raw.notes = notes;
@@ -222,7 +275,9 @@ export class Runtime extends EventEmitter {
     } else {
       await this.cores.xray.stop();
     }
-    if (wantSingbox) {
+    if (wantSingbox && this.cores.singbox.isRunning(singboxConfig)) {
+      // Unchanged config: keep connections alive.
+    } else if (wantSingbox) {
       let ok = await this.cores.singbox.start(singboxConfig);
       if (!ok && singboxConfig !== singbox.config) {
         notes.singbox = `override rejected: ${coreReason(this.cores.singbox.lastError)}`;
@@ -241,7 +296,10 @@ export class Runtime extends EventEmitter {
     }
 
     const tg = doc.settings.telegram.mtproto;
-    if (tg.enabled) {
+    const mtRunning = this.mtproto.child && this.mtproto.status === 'running' && this.mtproto.runningSecret === tg.secret;
+    if (tg.enabled && mtRunning) {
+      // unchanged
+    } else if (tg.enabled) {
       if (!tg.secret) {
         setDoc((d) => {
           d.settings.telegram.mtproto.secret = generateSecret(d.settings.telegram.mtproto.faketlsHost);
@@ -279,34 +337,8 @@ export class Runtime extends EventEmitter {
   }
 
   async tick() {
-    let stats = [];
-    try {
-      stats = await queryStats(XRAY_API_PORT, '', false);
-    } catch {
-      stats = [];
-    }
-    if (stats.length) {
-      const { perUser, totals } = this.accountant.ingest(stats);
-      this.lastStats = { at: Date.now(), totals, perUser };
-      if (perUser.size) {
-        setDoc((d) => {
-          for (const user of d.users) {
-            const delta = perUser.get(user.id);
-            if (!delta) continue;
-            user.usage.up += delta.up;
-            user.usage.down += delta.down;
-            user.lastSeen = Date.now();
-          }
-        });
-      }
-      const point = {
-        t: Date.now(),
-        up: totals.up,
-        down: totals.down,
-        tg: this.mux.state().up + this.mux.state().down,
-      };
-      addTrafficSample(point);
-    }
+    const totals = await this.collect().catch(() => null);
+    if (totals) addTrafficSample({ t: Date.now(), up: totals.up, down: totals.down });
     try {
       this.sys = await sysStats(XRAY_API_PORT);
     } catch {

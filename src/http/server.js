@@ -62,6 +62,7 @@ function staticEntry(file) {
 
 function serveStatic(req, res, urlPath) {
   const rel = urlPath === '/' ? 'index.html' : urlPath.replace(/^\/+/, '');
+  if (rel === 'portal.html' || rel === 'sprite.svg') return false;
   if (rel.includes('..')) {
     res.writeHead(400).end('bad request');
     return true;
@@ -80,6 +81,10 @@ function serveStatic(req, res, urlPath) {
     ETag: `"${entry.mtime.toString(36)}-${entry.raw.length.toString(36)}"`,
     Vary: 'Accept-Encoding',
   };
+  if (entry.ext === '.html') {
+    headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+    headers['X-Frame-Options'] = 'DENY';
+  }
   if (entry.gzip && acceptsGzip) headers['Content-Encoding'] = 'gzip';
   if (req.headers['if-none-match'] === headers.ETag) {
     res.writeHead(304, { ETag: headers.ETag, 'Cache-Control': headers['Cache-Control'] });
@@ -99,15 +104,17 @@ export function createPanelServer({ runtime, api }) {
 
     if (url.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, brand: 'BBG', maintainer: 'SANDBAAD', at: Date.now() }));
+      res.end('{"ok":true}');
       return;
     }
 
     if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/sub/') || url.pathname.startsWith('/u/')) {
       handleApi({ req, res, url, runtime, api }).catch((err) => {
-        console.error('[api]', err);
-        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'internal', message: err.message }));
+        const known = err && /^(body too large|invalid json)$/.test(err.message);
+        if (!known) console.error('[api]', err);
+        if (res.writableEnded || res.destroyed) return;
+        if (!res.headersSent) res.writeHead(known ? 400 : 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: known ? err.message : 'internal error' }));
       });
       return;
     }

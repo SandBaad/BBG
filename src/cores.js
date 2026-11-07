@@ -29,6 +29,7 @@ export class Core extends EventEmitter {
     this.desired = false;
     this.restartTimer = null;
     this.configPath = path.join(STATE_DIR, `${id}.json`);
+    this.runningJson = '';
     this.logPath = path.join(LOG_DIR, `${id}.log`);
   }
 
@@ -61,6 +62,11 @@ export class Core extends EventEmitter {
     const output = `${res.stdout || ''}${res.stderr || ''}`;
     const ok = res.status === 0;
     return { ok, error: ok ? '' : output.trim().split('\n').slice(-4).join(' '), output };
+  }
+
+  /** True when `config` is exactly what the live process is running. */
+  isRunning(config) {
+    return Boolean(this.child) && this.status === 'running' && this.runningJson === JSON.stringify(config);
   }
 
   async start(config = this.config) {
@@ -115,9 +121,13 @@ export class Core extends EventEmitter {
       this.status = 'running';
       this.emit('status', this.snapshot());
     });
+    this.runningJson = JSON.stringify(this.config);
     child.on('exit', (code, signal) => {
+      // A process we already replaced must not clobber the new one's state.
+      if (this.child !== child) return;
       const wasDesired = this.desired;
       this.child = null;
+      this.runningJson = '';
       this.status = wasDesired ? 'crashed' : 'stopped';
       this.log(`exited code=${code} signal=${signal || '-'}`);
       this.emit('status', this.snapshot());
@@ -150,6 +160,7 @@ export class Core extends EventEmitter {
     }
     const child = this.child;
     this.child = null;
+    this.runningJson = '';
     if (!child) {
       if (this.status !== 'missing') this.status = 'stopped';
       return;

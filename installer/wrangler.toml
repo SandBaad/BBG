@@ -1,0 +1,14 @@
+# BBG · SANDBAAD — one-token installer (web page + optional Telegram bot).
+# Deployed automatically by .github/workflows/deploy-installer.yml, or by hand:
+#   node ../scripts/build-worker.mjs && npx wrangler deploy
+# Optional bot:  npx wrangler secret put TELEGRAM_BOT_TOKEN
+#                npx wrangler secret put TELEGRAM_WEBHOOK_SECRET   (any long random string)
+#                then open  https://<installer-url>/tg/setup?key=<TELEGRAM_WEBHOOK_SECRET>
+name = "bbg-installer"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[vars]
+# Bot username without @, shown on the web page (leave empty if you do not run the bot).
+TELEGRAM_BOT_USERNAME = ""

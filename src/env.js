@@ -12,7 +12,7 @@ export const APP = {
   brand: 'BBG',
   tag: 'CORE',
   author: 'SANDBAAD',
-  version: '2.0.0',
+  version: '2.1.0',
   edition: 'ENTERPRISE',
   repo: process.env.BBG_REPO || '',
   telegram: process.env.BBG_TELEGRAM_CONTACT || '',
@@ -87,6 +87,18 @@ export const LIMITS = {
 };
 
 export const IS_RAILWAY = Boolean(RAILWAY.publicDomain || RAILWAY.tcpDomain || process.env.RAILWAY_ENVIRONMENT_ID);
+
+/**
+ * Trust X-Forwarded-For only behind a known reverse proxy (Railway, or when
+ * BBG_TRUST_PROXY=1). The proxy appends the real client address last.
+ */
+export const TRUST_PROXY = process.env.BBG_TRUST_PROXY === '1' || (Boolean(process.env.RAILWAY_ENVIRONMENT_ID) && process.env.BBG_TRUST_PROXY !== '0');
+
+/** Optional first-boot admin (otherwise /setup needs the key printed in the log). */
+export const BOOT_ADMIN = {
+  user: (process.env.BBG_ADMIN_USER || 'admin').trim(),
+  pass: process.env.BBG_ADMIN_PASSWORD || '',
+};
 export const NODE_ENV = process.env.NODE_ENV || 'production';
 
 export function ensureDirs() {

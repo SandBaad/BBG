@@ -11,7 +11,8 @@ import { stripAnsi } from '../text.js';
 import { checkUpdate, applyUpdate } from '../update.js';
 import { scanner, DEFAULTS as RAILYNX_DEFAULTS, parseVlessLink } from '../railynx.js';
 import { readFileSync } from 'node:fs';
-import { APP, RAILWAY, IS_RAILWAY, DATA_DIR, PORT, MUX_PORT, BIN, NODE_ENV, LIMITS } from '../env.js';
+import crypto from 'node:crypto';
+import { APP, RAILWAY, IS_RAILWAY, DATA_DIR, PORT, MUX_PORT, BIN, NODE_ENV, LIMITS, TRUST_PROXY } from '../env.js';
 import {
   get as getDoc,
   set as setDoc,
@@ -23,10 +24,11 @@ import {
   isExpired,
   isQuotaExhausted,
   event,
+  setupKey,
 } from '../store.js';
-import { PRESETS, describeInbound, presetById, FIELD_MAP } from '../catalog.js';
+import { PRESETS, describeInbound, presetById, FIELD_MAP, freshParams, newRouteKey } from '../catalog.js';
 import { buildUserLinks } from '../links.js';
-import { buildSub, headerSet, plainText } from '../subs.js';
+import { buildSub, plainText } from '../subs.js';
 import {
   hashPassword,
   verifyPassword,
@@ -35,7 +37,7 @@ import {
   readSession,
   throttle,
   clearThrottle,
-  subToken,
+  randomSubToken,
 } from '../auth.js';
 import { generateSecret, telegramLinks, MTPROTO_PORT } from '../proxy/mtproto.js';
 
@@ -66,13 +68,13 @@ function send(res, status, body, headers = {}) {
   res.end(payload);
 }
 
-function readBody(req) {
+function readBody(req, limit = LIMITS.maxBodyBytes) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > LIMITS.maxBodyBytes) {
+      if (size > limit) {
         reject(new Error('body too large'));
         req.destroy();
         return;
@@ -93,11 +95,32 @@ function readBody(req) {
 }
 
 function clientIp(req) {
-  return (
-    (req.headers['x-forwarded-for'] || '').toString().split(',')[0].trim() ||
-    req.socket.remoteAddress ||
-    'unknown'
-  );
+  // Behind a trusted proxy the real address is the LAST hop it appended;
+  // earlier entries are whatever the client chose to send.
+  if (TRUST_PROXY) {
+    const hops = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1];
+  }
+  return req.socket.remoteAddress || 'unknown';
+}
+
+const safeEq = (a, b) => {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+};
+const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+const IP_RE = /^(\d{1,3}\.){3}\d{1,3}$|^[0-9a-f:]+$/i;
+const isHost = (v) => HOST_RE.test(v) || IP_RE.test(v);
+
+/** Header values must be latin1; anything else goes base64 (supported by v2rayNG/Hiddify). */
+function headerText(text) {
+  const v = String(text || '');
+  return /^[\x20-\x7e]*$/.test(v) ? v : `base64:${Buffer.from(v, 'utf8').toString('base64')}`;
+}
+function attachmentName(name) {
+  const ascii = String(name).replace(/[^\w.-]+/g, '_').slice(0, 60) || 'subscription';
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
 function gbToBytes(gb) {
@@ -182,11 +205,26 @@ export function buildState(runtime, req) {
       usageGb: bytesToGb(userTotal(user)),
       lastSeen: user.lastSeen,
       links,
-      subToken: subToken(doc.secrets.server, user.id),
-      subUrl: subBase ? `${subBase}/sub/${subToken(doc.secrets.server, user.id)}` : '',
-      portalUrl: subBase ? `${subBase}/u/${subToken(doc.secrets.server, user.id)}` : '',
+      subToken: user.subToken,
+      subUrl: subBase ? `${subBase}/sub/${user.subToken}` : '',
+      portalUrl: subBase ? `${subBase}/u/${user.subToken}` : '',
     };
   });
+
+  const warnings = [];
+  const enabledCores = new Set(inbounds.filter((i) => i.enabled).map((i) => i.core));
+  for (const [id, name] of [['xray', 'Xray'], ['singbox', 'sing-box']]) {
+    const st = snapshot[id]?.status;
+    if (!enabledCores.has(id) || st === 'running' || st === 'starting') continue;
+    warnings.push({
+      level: 'bad',
+      fa: st === 'missing' ? `هستهٔ ${name} نصب نیست؛ پروتکل‌های آن کار نمی‌کنند.` : `هستهٔ ${name} اجرا نمی‌شود (${st}). بخش «هسته‌ها و لاگ» را ببینید.`,
+      en: st === 'missing' ? `${name} is not installed; its protocols do not work.` : `${name} is not running (${st}). See Cores & logs.`,
+    });
+  }
+  if (!tcpReady) warnings.push({ level: 'warn', fa: 'پورت TCP عمومی تنظیم نشده؛ REALITY، AnyTLS و Shadowsocks بدون آن قابل اتصال نیستند.', en: 'No public TCP port is set; REALITY, AnyTLS and Shadowsocks cannot be reached without it.' });
+  if (!facts.publicHost) warnings.push({ level: 'warn', fa: 'دامنهٔ عمومی HTTPS تنظیم نشده؛ لینک اشتراک ساخته نمی‌شود.', en: 'No public HTTPS domain is set; subscription links cannot be built.' });
+  if (!(doc.users || []).length) warnings.push({ level: 'info', fa: 'هنوز مشترکی ساخته نشده است.', en: 'No subscribers yet.' });
 
   const tg = doc.settings.telegram;
   const mtLinks =
@@ -201,6 +239,10 @@ export function buildState(runtime, req) {
     : '';
 
   return {
+    edition: 'server',
+    features: { telegram: true, cores: true, scanner: true, easy: true, raw: true, update: true, logs: true, probe: true, ping: true },
+    warnings,
+    trafficUnit: 'sample',
     app: {
       brand: doc.settings.brand || APP.brand,
       tag: doc.settings.tag || APP.tag,
@@ -217,6 +259,7 @@ export function buildState(runtime, req) {
       tcpPort: facts.tcpPort,
       muxPort: MUX_PORT,
       panelUrl: facts.publicHost ? `https://${facts.publicHost}` : '',
+      subBase: subBase ? `${subBase}/sub` : '',
       isRailway: IS_RAILWAY,
       region: RAILWAY.region,
       serviceName: RAILWAY.serviceName,
@@ -290,7 +333,8 @@ export function buildState(runtime, req) {
 export function buildBootstrap(runtime, req) {
   const doc = getDoc();
   const facts = runtime.facts();
-  const session = doc.admin ? readSession(req, doc.secrets.server) : null;
+  const raw = doc.admin ? readSession(req, doc.secrets.server) : null;
+  const session = raw && raw.u === doc.admin.username && (raw.v || 1) === (doc.admin.ver || 1) ? raw : null;
   return {
     app: {
       brand: doc.settings.brand || APP.brand,
@@ -302,7 +346,9 @@ export function buildBootstrap(runtime, req) {
       env: NODE_ENV,
       now: Date.now(),
     },
+    edition: 'server',
     needsSetup: !doc.admin,
+    setupKeyRequired: !doc.admin,
     loggedIn: Boolean(session),
     username: session?.u || '',
     facts: {
@@ -333,22 +379,37 @@ export async function handleApi(ctx) {
 
   const route = `${req.method} ${path}`;
 
+  // Cross-site requests cannot set custom headers without a CORS preflight we never grant.
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    if (req.headers['x-requested-with'] !== 'bbg') return send(res, 403, { error: 'missing header' });
+    const origin = req.headers.origin;
+    if (origin) {
+      let host = '';
+      try { host = new URL(origin).host; } catch { host = ''; }
+      if (host !== req.headers.host && host !== req.headers['x-forwarded-host']) return send(res, 403, { error: 'bad origin' });
+    }
+  }
+
   if (route === 'GET /api/bootstrap') {
     return send(res, 200, buildBootstrap(runtime, req));
   }
 
   if (route === 'POST /api/setup') {
     if (doc.admin) return send(res, 409, { error: 'already configured' });
+    const ip = clientIp(req);
+    const gate = throttle(`setup:${ip}`);
+    if (gate.blocked) return send(res, 429, { error: 'too many attempts', retryInMs: gate.retryInMs });
     const body = await readBody(req);
+    if (!safeEq(String(body.setupKey || ''), setupKey())) return send(res, 403, { error: 'wrong setup key (it is printed in the server log)' });
     const username = String(body.username || '').trim();
     const password = String(body.password || '');
-    if (username.length < 3) return send(res, 400, { error: 'username too short' });
-    if (password.length < 8) return send(res, 400, { error: 'password must be at least 8 characters' });
+    if (!/^[\w.@-]{3,32}$/.test(username)) return send(res, 400, { error: 'username: 3-32 letters, digits, . _ - @' });
+    if (password.length < 10) return send(res, 400, { error: 'password must be at least 10 characters' });
     const record = hashPassword(password);
     setDoc((d) => {
-      d.admin = { username, salt: record.salt, hash: record.hash, algo: record.algo, updatedAt: Date.now() };
+      d.admin = { username, salt: record.salt, hash: record.hash, algo: record.algo, ver: 1, updatedAt: Date.now() };
     });
-    issueSession(res, doc.secrets.server, username);
+    issueSession(res, doc.secrets.server, username, 1, req);
     event('auth', `admin account created (${username})`);
     return send(res, 200, { ok: true, ...buildBootstrap(runtime, req) });
   }
@@ -359,21 +420,22 @@ export async function handleApi(ctx) {
     if (gate.blocked) return send(res, 429, { error: 'too many attempts', retryInMs: gate.retryInMs });
     const body = await readBody(req);
     if (!doc.admin) return send(res, 409, { error: 'setup required' });
-    const okUser = String(body.username || '') === doc.admin.username;
+    const okUser = safeEq(String(body.username || ''), doc.admin.username);
     const okPass = verifyPassword(String(body.password || ''), doc.admin);
     if (!okUser || !okPass) return send(res, 401, { error: 'invalid credentials' });
     clearThrottle(`login:${ip}`);
-    issueSession(res, doc.secrets.server, doc.admin.username);
+    issueSession(res, doc.secrets.server, doc.admin.username, doc.admin.ver || 1, req);
     return send(res, 200, { ok: true });
   }
 
   if (route === 'POST /api/logout') {
-    clearSession(res);
+    clearSession(res, req);
     return send(res, 200, { ok: true });
   }
 
   /* everything below needs a session */
-  const session = doc.admin ? readSession(req, doc.secrets.server) : null;
+  const raw = doc.admin ? readSession(req, doc.secrets.server) : null;
+  const session = raw && raw.u === doc.admin.username && (raw.v || 1) === (doc.admin.ver || 1) ? raw : null;
   if (!session) return send(res, 401, { error: 'unauthorized' });
 
   if (route === 'GET /api/state') {
@@ -382,37 +444,53 @@ export async function handleApi(ctx) {
 
   if (route === 'POST /api/settings') {
     const body = await readBody(req);
-    const allowed = [
-      'publicHost',
-      'tcpHost',
-      'tcpPort',
-      'theme',
-      'lang',
-      'brand',
-      'tag',
-      'autoRestartCores',
-      'lowMemory',
-      'publicStatus',
-      'logLevel',
-      'fragment',
-    ];
-    setDoc((d) => {
-      for (const key of allowed) {
-        if (body[key] !== undefined) d.settings[key] = body[key];
+    const clean = {};
+    const bad = (m) => send(res, 400, { error: m });
+    if (body.publicHost !== undefined) {
+      const v = String(body.publicHost).trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').toLowerCase();
+      if (v && !isHost(v)) return bad('invalid public domain');
+      clean.publicHost = v;
+    }
+    if (body.tcpHost !== undefined) {
+      const v = String(body.tcpHost).trim().toLowerCase();
+      if (v && !isHost(v)) return bad('invalid TCP host');
+      clean.tcpHost = v;
+    }
+    if (body.tcpPort !== undefined) {
+      const v = Number(body.tcpPort) || 0;
+      if (!Number.isInteger(v) || v < 0 || v > 65535) return bad('invalid TCP port');
+      clean.tcpPort = v;
+    }
+    if (body.theme !== undefined) clean.theme = body.theme === 'light' ? 'light' : 'dark';
+    if (body.lang !== undefined) clean.lang = body.lang === 'en' ? 'en' : 'fa';
+    for (const k of ['brand', 'tag']) {
+      if (body[k] !== undefined) {
+        const v = String(body[k]).trim().slice(0, 24);
+        if (!v) return bad(`${k} cannot be empty`);
+        clean[k] = v;
       }
+    }
+    for (const k of ['autoRestartCores', 'lowMemory', 'publicStatus', 'fragment']) if (body[k] !== undefined) clean[k] = Boolean(body[k]);
+    if (body.logLevel !== undefined) {
+      if (!['debug', 'info', 'warning', 'error', 'none'].includes(body.logLevel)) return bad('invalid log level');
+      clean.logLevel = body.logLevel;
+    }
+    const coreOnly = Object.keys(clean).every((k) => ['theme', 'lang'].includes(k)) && !body.cores;
+    setDoc((d) => {
+      Object.assign(d.settings, clean);
       if (body.cores && typeof body.cores === 'object') {
         if (body.cores.xray) d.settings.cores.xray = { ...d.settings.cores.xray, ...body.cores.xray };
         if (body.cores.singbox) d.settings.cores.singbox = { ...d.settings.cores.singbox, ...body.cores.singbox };
       }
     });
-    await runtime.apply({ reason: 'settings' });
+    if (!coreOnly) await runtime.apply({ reason: 'settings' });
     return send(res, 200, { ok: true, state: buildState(runtime, req) });
   }
 
   if (route === 'POST /api/admin/password') {
     const body = await readBody(req);
     const password = String(body.password || '');
-    if (password.length < 8) return send(res, 400, { error: 'password too short' });
+    if (password.length < 10) return send(res, 400, { error: 'password must be at least 10 characters' });
     if (!verifyPassword(String(body.current || ''), doc.admin)) {
       return send(res, 403, { error: 'wrong current password' });
     }
@@ -420,8 +498,11 @@ export async function handleApi(ctx) {
     setDoc((d) => {
       d.admin.salt = record.salt;
       d.admin.hash = record.hash;
+      d.admin.ver = (d.admin.ver || 1) + 1;
       d.admin.updatedAt = Date.now();
     });
+    event('auth', 'admin password changed; other sessions signed out');
+    issueSession(res, doc.secrets.server, doc.admin.username, doc.admin.ver, req);
     return send(res, 200, { ok: true });
   }
 
@@ -429,7 +510,7 @@ export async function handleApi(ctx) {
   if (route === 'POST /api/users') {
     if (doc.users.length >= LIMITS.maxUsers) return send(res, 400, { error: 'user limit reached' });
     const body = await readBody(req);
-    const name = String(body.name || '').trim() || `user-${doc.users.length + 1}`;
+    const name = String(body.name || '').trim().slice(0, 64) || `user-${doc.users.length + 1}`;
     const days = Number(body.days || 0);
     const user = normalizeUser({
       name,
@@ -454,14 +535,14 @@ export async function handleApi(ctx) {
     if (req.method === 'PATCH' || (req.method === 'POST' && !action)) {
       const body = await readBody(req);
       setDoc(() => {
-        if (body.name !== undefined) user.name = String(body.name).slice(0, 64);
+        if (body.name !== undefined) user.name = String(body.name).trim().slice(0, 64) || user.name;
         if (body.enabled !== undefined) user.enabled = Boolean(body.enabled);
         if (body.quotaGb !== undefined) user.quotaBytes = gbToBytes(body.quotaGb);
         if (body.days !== undefined) {
           const days = Number(body.days);
           user.expiresAt = days > 0 ? Date.now() + days * 86400000 : null;
         }
-        if (body.expiresAt !== undefined) user.expiresAt = body.expiresAt ? Number(body.expiresAt) : null;
+        if (body.expiresAt !== undefined) user.expiresAt = Number(body.expiresAt) > 0 ? Number(body.expiresAt) : null;
         if (body.ipLimit !== undefined) user.ipLimit = Math.max(0, Number(body.ipLimit) || 0);
         if (body.note !== undefined) user.note = String(body.note).slice(0, 200);
         if (user.enabled) user.disabledReason = '';
@@ -482,8 +563,9 @@ export async function handleApi(ctx) {
     if (action === 'rotate') {
       setDoc(() => {
         user.secrets = normalizeUser({ id: user.id, name: user.name }).secrets;
+        user.subToken = randomSubToken();
       });
-      event('user', `credentials rotated (${user.name})`);
+      event('user', `credentials and subscription link rotated (${user.name})`);
       await runtime.apply({ reason: 'user-rotate' });
       return send(res, 200, { ok: true, state: buildState(runtime, req) });
     }
@@ -493,7 +575,6 @@ export async function handleApi(ctx) {
         user.usage = { up: 0, down: 0 };
         if (user.disabledReason === 'quota') user.disabledReason = '';
       });
-      runtime.accountant.reset();
       await runtime.apply({ reason: 'user-reset' });
       return send(res, 200, { ok: true, state: buildState(runtime, req) });
     }
@@ -508,16 +589,16 @@ export async function handleApi(ctx) {
     const base = preset.core === 'singbox' ? 12000 : 11000;
     let port = base + 1;
     while (used.has(port)) port += 1;
-    const id = `ib${Math.random().toString(36).slice(2, 8)}`;
+    const id = `ib${crypto.randomBytes(4).toString('hex').slice(0, 6)}`;
     setDoc((d) => {
       d.inbounds.push({
         id,
         presetId: preset.id,
         label: preset.title.en,
         enabled: true,
-        routeKey: `bbg-${id}`,
+        routeKey: newRouteKey(),
         port,
-        params: { ...preset.defaults },
+        params: freshParams(preset),
       });
     });
     await runtime.apply({ reason: 'inbound-add' });
@@ -537,10 +618,25 @@ export async function handleApi(ctx) {
     }
     if (req.method === 'PATCH' || req.method === 'POST') {
       const body = await readBody(req);
+      const preset = presetById(inbound.presetId);
+      const allowedKeys = new Set(preset?.fields || []);
+      const params = {};
+      if (body.params && typeof body.params === 'object') {
+        for (const [k, v] of Object.entries(body.params)) {
+          if (!allowedKeys.has(k)) continue;
+          const f = FIELD_MAP[k];
+          const val = String(v ?? '').trim().slice(0, 200);
+          if (f?.type === 'select' && !f.options.includes(val)) return send(res, 400, { error: `invalid value for ${k}` });
+          if (f?.type === 'number' && val !== '' && !(Number(val) >= 0)) return send(res, 400, { error: `invalid number for ${k}` });
+          if (/[\s"'<>\\]/.test(val) && k !== 'obfs') return send(res, 400, { error: `invalid characters in ${k}` });
+          params[k] = f?.type === 'number' ? Number(val || 0) : val;
+        }
+      }
+      if (params.shortIds !== undefined && !params.shortIds) delete params.shortIds;
       setDoc(() => {
         if (body.enabled !== undefined) inbound.enabled = Boolean(body.enabled);
         if (body.label !== undefined) inbound.label = String(body.label).slice(0, 60);
-        if (body.params && typeof body.params === 'object') inbound.params = { ...inbound.params, ...body.params };
+        inbound.params = { ...inbound.params, ...params };
       });
       await runtime.apply({ reason: 'inbound-update' });
       return send(res, 200, { ok: true, state: buildState(runtime, req) });
@@ -550,17 +646,47 @@ export async function handleApi(ctx) {
   /* ── telegram ──────────────────────────────────────────────────────── */
   if (route === 'POST /api/telegram') {
     const body = await readBody(req);
+    const tgNow = doc.settings.telegram;
+    const patch = { mtproto: {}, socks: {}, http: {} };
+    if (body.mtproto && typeof body.mtproto === 'object') {
+      const m = body.mtproto;
+      if (m.enabled !== undefined) patch.mtproto.enabled = Boolean(m.enabled);
+      if (m.faketlsHost !== undefined) {
+        const h = String(m.faketlsHost).trim().toLowerCase();
+        if (!HOST_RE.test(h)) return send(res, 400, { error: 'invalid FakeTLS domain' });
+        patch.mtproto.faketlsHost = h;
+      }
+      if (m.adTag !== undefined) {
+        const t = String(m.adTag).trim();
+        if (t && !/^[0-9a-f]{32}$/i.test(t)) return send(res, 400, { error: 'ad tag must be 32 hex characters' });
+        patch.mtproto.adTag = t;
+      }
+      if (m.preferIpv6 !== undefined) patch.mtproto.preferIpv6 = Boolean(m.preferIpv6);
+    }
+    for (const kind of ['socks', 'http']) {
+      const p = body[kind];
+      if (!p || typeof p !== 'object') continue;
+      if (p.user !== undefined) {
+        const u = String(p.user).trim();
+        if (!/^[\w.-]{1,32}$/.test(u)) return send(res, 400, { error: `${kind}: username 1-32 letters/digits` });
+        patch[kind].user = u;
+      }
+      if (p.pass !== undefined) {
+        const pw = String(p.pass);
+        if (pw.length < 8 || pw.length > 64 || /[\s:@]/.test(pw)) return send(res, 400, { error: `${kind}: password 8-64 characters, no spaces, : or @` });
+        patch[kind].pass = pw;
+      }
+      if (p.enabled !== undefined) patch[kind].enabled = Boolean(p.enabled);
+      const pass = patch[kind].pass ?? tgNow[kind].pass;
+      if ((patch[kind].enabled ?? tgNow[kind].enabled) && (!pass || pass.length < 8)) return send(res, 400, { error: `${kind}: set a password of 8+ characters first` });
+    }
     setDoc((d) => {
       const tg = d.settings.telegram;
-      if (body.mtproto) {
-        tg.mtproto = { ...tg.mtproto, ...body.mtproto };
-        if (!tg.mtproto.secret || body.mtproto.regenerate) {
-          tg.mtproto.secret = generateSecret(tg.mtproto.faketlsHost || 'www.samsung.com');
-        }
-      }
-      if (body.socks) tg.socks = { ...tg.socks, ...body.socks };
-      if (body.http) tg.http = { ...tg.http, ...body.http };
-      if (body.web) tg.web = { ...tg.web, ...body.web };
+      const hostChanged = patch.mtproto.faketlsHost && patch.mtproto.faketlsHost !== tg.mtproto.faketlsHost;
+      tg.mtproto = { ...tg.mtproto, ...patch.mtproto };
+      if (!tg.mtproto.secret || hostChanged) tg.mtproto.secret = generateSecret(tg.mtproto.faketlsHost || 'www.samsung.com');
+      tg.socks = { ...tg.socks, ...patch.socks };
+      tg.http = { ...tg.http, ...patch.http };
     });
     await runtime.apply({ reason: 'telegram' });
     return send(res, 200, { ok: true, state: buildState(runtime, req) });
@@ -656,12 +782,7 @@ export async function handleApi(ctx) {
 
   if (route === 'POST /api/railynx/scan' || route === 'POST /api/edgescan/scan') {
     const body = await readBody(req);
-    let link = String(body.link || '').trim();
-    if (!link && body.linkId) {
-      const owner = (doc.users || []).find((u) => (u.links || []).some((l) => l.id === body.linkId));
-      const found = owner && owner.links.find((l) => l.id === body.linkId);
-      if (found) link = found.uri;
-    }
+    const link = String(body.link || '').trim();
     try {
       parseVlessLink(link);
     } catch (err) {
@@ -725,13 +846,13 @@ export async function handleApi(ctx) {
 
   if (route === 'GET /api/backup') {
     return send(res, 200, exportBackup(), {
-      'Content-Disposition': `attachment; filename="bbg-backup-${new Date().toISOString().slice(0, 10)}.json"`,
+      'Content-Disposition': attachmentName(`bbg-backup-${new Date().toISOString().slice(0, 10)}.json`),
       'Content-Type': 'application/json; charset=utf-8',
     });
   }
 
   if (route === 'POST /api/restore') {
-    const body = await readBody(req);
+    const body = await readBody(req, 16 * 1024 * 1024);
     try {
       importBackup(JSON.stringify(body));
     } catch (err) {
@@ -739,7 +860,7 @@ export async function handleApi(ctx) {
     }
     load();
     await runtime.apply({ reason: 'restore' });
-    return send(res, 200, { ok: true, state: buildState(runtime, req) });
+    return send(res, 200, { ok: true, relogin: true });
   }
 
   if (route === 'GET /api/update') {
@@ -779,8 +900,10 @@ export async function handleApi(ctx) {
   if (route === 'POST /api/tools/probe') {
     const body = await readBody(req);
     const host = String(body.host || '').trim();
-    if (!host) return send(res, 400, { error: 'host required' });
-    const result = await probeTcp(host, Number(body.port || 443));
+    const port = Number(body.port || 443);
+    if (!host || host.length > 253 || !/^[A-Za-z0-9.:[\]-]+$/.test(host)) return send(res, 400, { error: 'valid host required' });
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return send(res, 400, { error: 'port must be 1-65535' });
+    const result = await probeTcp(host.replace(/^\[|\]$/g, ''), port);
     return send(res, 200, result);
   }
 
@@ -808,38 +931,51 @@ function probeTcp(host, port) {
 
 /* ── subscriptions ───────────────────────────────────────────────────── */
 
+let PORTAL_HTML = null;
+function portalHtml() {
+  if (!PORTAL_HTML) {
+    const page = readFileSync(new URL('../../public/portal.html', import.meta.url), 'utf8');
+    const qr = readFileSync(new URL('../../public/js/qrcode.js', import.meta.url), 'utf8');
+    PORTAL_HTML = page.replace('<script data-inline="qrcode"></script>', () => `<script>${qr}</script>`);
+  }
+  return PORTAL_HTML;
+}
+
 function handleSubscription({ req, res, url, runtime }) {
   const parts = url.pathname.split('/').filter(Boolean);
   const kind = parts[0];
   const token = parts[1] || '';
   const format = (parts[2] || url.searchParams.get('format') || 'base64').toLowerCase();
   const doc = runtime.withRuntime(getDoc());
-  const user = (doc.users || []).find((u) => subToken(doc.secrets.server, u.id) === token);
-  if (!user) return send(res, 404, { error: 'not found' });
+  const user = token.length >= 16 ? (doc.users || []).find((u) => u.subToken && safeEq(u.subToken, token)) : null;
+  if (!user) {
+    res.writeHead(404, { 'Content-Type': 'text/html', Server: 'nginx' });
+    res.end('<html><head><title>404 Not Found</title></head><body><center><h1>404 Not Found</h1></center><hr><center>nginx</center></body></html>');
+    return;
+  }
 
   if (kind === 'u') {
+    const status = userStatus(user);
+    const host = runtime.facts().publicHost || req.headers.host || '';
     const info = {
       name: user.name,
-      status: userStatus(user),
-      usageGb: bytesToGb(userTotal(user)),
-      quotaGb: bytesToGb(user.quotaBytes),
+      status,
+      usage: { up: user.usage.up, down: user.usage.down, total: userTotal(user) },
+      quotaBytes: user.quotaBytes,
       expiresAt: user.expiresAt,
-      links: buildUserLinks(doc, user).map((l) => ({
-        label: l.label,
-        uri: l.uri,
-        protocol: l.protocol,
-        transport: l.transport,
-        security: l.security,
-        core: l.core,
-      })),
+      subUrl: host ? `https://${host}/sub/${user.subToken}` : `/sub/${user.subToken}`,
+      links: status === 'active'
+        ? buildUserLinks(doc, user).map((l) => ({ label: l.label, short: l.short, uri: l.uri, protocol: l.protocol, transport: l.transport }))
+        : [],
     };
     if (url.searchParams.get('json') === '1') return send(res, 200, info);
-    try {
-      const page = readFileSync(new URL('../../public/portal.html', import.meta.url));
-      return send(res, 200, page, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    } catch {
-      return send(res, 200, info);
-    }
+    const page = portalHtml().replace('<meta name="portal-data" content="">', `<meta name="portal-data" content="/u/${user.subToken}?json=1">`);
+    return send(res, 200, page, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+      'X-Frame-Options': 'DENY',
+    });
   }
 
   if (!FORMATS.has(format)) return send(res, 400, { error: 'unknown format' });
@@ -848,19 +984,19 @@ function handleSubscription({ req, res, url, runtime }) {
     'Content-Type': sub.type,
     'Cache-Control': 'no-store',
     'Subscription-Userinfo': buildUserInfoHeader(user),
-    ...headerSet(doc.settings.brand || APP.brand),
+    'Profile-Update-Interval': '6',
+    'Profile-Title': headerText(`${doc.settings.brand || APP.brand} · ${user.name}`),
   };
   if (url.searchParams.get('download') === '1') {
-    headers['Content-Disposition'] = `attachment; filename="bbg-${user.name}.${format === 'clash' ? 'yaml' : format === 'links' ? 'txt' : 'json'}"`;
+    headers['Content-Disposition'] = attachmentName(`${user.name}.${format === 'clash' ? 'yaml' : format === 'links' || format === 'base64' ? 'txt' : 'json'}`);
   }
   return send(res, 200, sub.body, headers);
 }
 
 function buildUserInfoHeader(user) {
   const total = user.quotaBytes || 0;
-  const used = userTotal(user);
   const expire = user.expiresAt ? Math.floor(user.expiresAt / 1000) : 0;
-  return `upload=0; download=${used}; total=${total}; expire=${expire}`;
+  return `upload=${user.usage?.up || 0}; download=${user.usage?.down || 0}; total=${total}; expire=${expire}`;
 }
 
 export { plainText };

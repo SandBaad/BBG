@@ -1,60 +1,84 @@
-# BBG · Multi-Core Anti-Censorship & Subscription Control Plane
+# BBG · SANDBAAD
 
-**Project:** `BBG`  
-**Author / Maintainer:** `SANDBAAD`  
-**Version:** `2.0.0`
+پنل مدیریت VPN با دو نسخه:
 
-BBG is a high-performance, hardened multi-core VPN configuration and subscription management control plane orchestrating **Xray-core**, **sing-box 1.12+**, and **MTProto (FakeTLS v2)** over a unified single-port TCP multiplexer and HTTP/WebSocket edge router.
+| نسخه | کجا اجرا می‌شود | پروتکل‌ها | نصب |
+| --- | --- | --- | --- |
+| **Worker** | حساب Cloudflare خود کاربر (رایگان) | VLESS و Trojan روی WebSocket + TLS کلادفلر | فقط با یک API Token، از صفحهٔ وب یا ربات تلگرام |
+| **سرور** | VPS یا Railway (Docker) | REALITY، Shadowsocks‑2022، AnyTLS، ShadowTLS، Hysteria2، WS/XHTTP/gRPC + پروکسی تلگرام | Docker یا `npm start` |
 
----
-
-## Key Capabilities
-
-1. **Dual-Core Hardened Configuration Engine (`Xray-core` + `sing-box 1.12+`):**
-   - **Pruned & Hardened Catalog:** Legacy, unencrypted, and easily fingerprinted protocols are removed. Only DPI-resilient transports are provisioned:
-     - `VLESS + REALITY (XTLS-RPRX-Vision)` with uTLS Chrome fingerprinting
-     - `VLESS + XHTTP (SplitHTTP)` with randomized padding (`xPaddingBytes: 100-1000`)
-     - `VLESS + WebSocket` with 0-RTT Early Data (`?ed=2048` / `Sec-WebSocket-Protocol` coalescing)
-     - `VLESS + HTTPUpgrade` & `VLESS + gRPC`
-     - `Trojan + WebSocket / TLS`
-     - `Shadowsocks 2022 (2022-blake3-aes-128-gcm / 2022-blake3-aes-256-gcm)` with per-user EIH keys
-     - `AnyTLS` (`sing-box 1.12+`) with configurable multi-step packet padding schemes
-     - `ShadowTLS v3` & `Hysteria2` (QUIC + salamander obfuscation)
-2. **Active DPI & Censorship Evasion:**
-   - **TLS ClientHello Fragmentation:** Outbound `fragment` dialer in Xray (`packets: "tlshello"`, `length: "100-200"`, `interval: "10-20"`) and native `tls.fragment` + `tls.record_fragment` in `sing-box`.
-   - **Multi-Record TLS SNI Parser:** The single-port TCP multiplexer (`src/proxy/sni.js`) reassembles fragmented TLS Handshake records (`0x16`) before extracting SNI and decrypts MTProto `obfuscated2` headers via AES-256-CTR.
-3. **Zero-Stall Latency & Telegram Remediation:**
-   - **Route-Only Sniffing (`routeOnly: true`):** Prevents destination override from hijacking Telegram direct IP connections onto poisoned domains.
-   - **Tunnel-Routed DoH & Direct Telegram CIDRs:** Eliminates 20-second DNS timeouts (`https+local://` stalls) by routing DoH through the proxy tunnel and binding Telegram's AS62041 / AS62014 CIDR blocks directly to the proxy outbound.
-   - **TCP_NODELAY & Connection Pooling:** Disables Nagle's algorithm (`setNoDelay(true)`) across all multiplexer and reverse-proxy sockets, coalesces 0-RTT WebSocket upgrade frames, and pools local HTTP subrequests (`keepAlive: true`).
-4. **Modern Glassmorphic UI & Bento Analytics Studio:**
-   - Frosted glass surfaces (`backdrop-filter: blur(22px)`), ambient glowing orbs, categorized sidebar navigation, floating Glassy Navigation Tabs V5 dock, cubic-bezier traffic area studio, circular health donut gauge, and live 24-bar multiplexer histogram.
+هر دو نسخه یک رابط کاربری مشترک دارند (فارسی/انگلیسی، تیره/روشن، موبایل).
 
 ---
 
-## Quick Start
+## نصب با یک توکن (نسخهٔ Worker)
+
+نصب‌کننده یک Worker است که هم صفحهٔ وب دارد و هم ربات تلگرام. کاربر توکن کلادفلرش را می‌دهد و نصب‌کننده خودش این کارها را می‌کند:
+
+1. بررسی توکن و پیدا کردن حساب
+2. ساختن زیردامنهٔ `workers.dev` اگر حساب هنوز ندارد
+3. بارگذاری پنل با Durable Object (ذخیره‌سازی دائمی) و کلیدهای تصادفی
+4. روشن کردن آدرس عمومی و، اگر داده شده، وصل کردن دامنهٔ شخصی
+5. تست پنل و برگرداندن آدرس پنل، نام کاربری، رمز و لینک اشتراک اولین کاربر
+
+توکن فقط در همان درخواست استفاده می‌شود؛ ذخیره یا لاگ نمی‌شود و پیام حاوی توکن در تلگرام بلافاصله پاک می‌شود.
+
+### راه‌اندازی نصب‌کننده روی حساب خودت (یک بار)
+
+1. این مخزن را در گیت‌هاب خودت push کن.
+2. در **Settings → Secrets and variables → Actions** این‌ها را اضافه کن:
+   - `CLOUDFLARE_API_TOKEN` (قالب «Edit Cloudflare Workers»)
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - اختیاری برای ربات: `TELEGRAM_BOT_TOKEN` (از ‎@BotFather) و `TELEGRAM_WEBHOOK_SECRET` (یک رشتهٔ تصادفی بلند)
+3. Workflow به نام **Deploy installer** خودکار اجرا می‌شود (یا از تب Actions دستی اجرایش کن). اول تست‌ها اجرا می‌شوند، بعد نصب‌کننده روی `https://bbg-installer.<subdomain>.workers.dev` بالا می‌آید و ربات وصل می‌شود.
+4. اگر ربات داری، نام کاربری‌اش را در `installer/wrangler.toml` در `TELEGRAM_BOT_USERNAME` بنویس تا روی صفحهٔ وب هم نشان داده شود.
+
+### دسترسی‌هایی که توکن کاربر لازم دارد
+
+| دسترسی | برای |
+| --- | --- |
+| Account · Workers Scripts · Edit | بارگذاری پنل و روشن کردن workers.dev |
+| Account · Account Settings · Read | پیدا کردن شناسهٔ حساب |
+| Zone · Workers Routes · Edit + Zone · Read + DNS · Edit | فقط برای دامنهٔ شخصی |
+
+دکمهٔ «ساخت توکن» در صفحهٔ نصب این دسترسی‌ها را از قبل انتخاب می‌کند.
+
+### محدودیت‌های نسخهٔ Worker
+
+- فقط VLESS و Trojan روی WebSocket. REALITY، Shadowsocks و Hysteria به سرور واقعی نیاز دارند.
+- Workers نمی‌توانند به IPهای خود کلادفلر وصل شوند؛ برای باز شدن سایت‌های پشت کلادفلر یک **ProxyIP** لازم است (از تنظیمات پنل). آن سرور مقصد اتصال‌ها را می‌بیند.
+- `workers.dev` در ایران اغلب فیلتر است؛ دامنهٔ شخصی یا IP تمیز اضافه کنید.
+- پلن رایگان: ۱۰۰٬۰۰۰ درخواست در روز برای Worker و Durable Object.
+
+---
+
+## نسخهٔ سرور
 
 ```bash
-npm install
-node scripts/install-binaries.mjs
-DATA_DIR=./data PORT=8080 BBG_TCP_PORT=8443 npm start
+npm run check                         # بررسی باینری‌ها و کانفیگ‌ها
+node scripts/install-binaries.mjs     # Xray، sing-box و mtg
+DATA_DIR=./data PORT=8080 BBG_TCP_PORT=8443 BBG_ADMIN_PASSWORD='a-long-password' npm start
 ```
 
-Run pre-flight verification:
+یا با Docker / Railway (`Dockerfile` و `scripts/deploy/railway.sh`).
+
+- اگر `BBG_ADMIN_PASSWORD` ندهید، صفحهٔ راه‌اندازی یک **کلید یک‌بارمصرف** می‌خواهد که در لاگ سرور چاپ می‌شود.
+- پورت `8080`: پنل و مسیرهای CDN (WS/XHTTP/gRPC) پشت HTTPS.
+- پورت `8443`: مالتی‌پلکسر TCP (REALITY، AnyTLS، Shadowsocks، پروکسی‌های تلگرام).
+- پشت پروکسی معکوس غیر از Railway، `BBG_TRUST_PROXY=1` بگذارید تا محدودیت ورود IP واقعی را ببیند.
+
+---
+
+## توسعه
 
 ```bash
-npm run check
+node scripts/build-worker.mjs   # UI را داخل Worker و بستهٔ نصب‌کننده می‌گذارد
+npm test                        # تست‌های Worker و نصب‌کننده (بدون اینترنت)
+node --import ./tests/cf-shim/register.mjs --import ./tests/cf-shim/runtime.mjs tests/serve-worker.mjs
+                                # اجرای محلی نسخهٔ Worker روی http://localhost:8787/panel-demo/
 ```
 
----
+- `src/` نسخهٔ سرور · `worker/panel.js` نسخهٔ Worker · `installer/` نصب‌کننده · `public/` رابط کاربری مشترک
+- `docs/SECURITY.md` مدل امنیتی و آنچه بررسی شده است
 
-## Documentation
-
-- [Architecture & Multiplexer Pipeline](docs/ARCHITECTURE.md)
-- [Hardened Protocol Catalog](docs/PROTOCOLS.md)
-- [Deployment Guide](docs/RAILWAY.md)
-- [Telegram Proxy Multiplexing](docs/TELEGRAM.md)
-
----
-
-Copyright © 2026 **SANDBAAD**. All rights reserved.
+Copyright © 2026 **SANDBAAD**.

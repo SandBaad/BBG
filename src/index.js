@@ -2,12 +2,27 @@
  * BBG · By SANDBAAD — Control Plane & Multiplexer Entry Point
  */
 import { ensureDirs, PORT, PANEL_PORTS, PORT_CONFLICT, MUX_PORT, DATA_DIR, BIN, APP, IS_RAILWAY, RAILWAY } from './env.js';
-import { load, get } from './store.js';
+import { load, get, set as setDoc, setupKey, event } from './store.js';
+import { hashPassword } from './auth.js';
+import { BOOT_ADMIN } from './env.js';
 import { Runtime } from './runtime.js';
 import { createPanelServer } from './http/server.js';
 
 ensureDirs();
 load();
+
+// First boot: create the admin from env, or require the one-time setup key.
+if (!get().admin && BOOT_ADMIN.pass) {
+  if (BOOT_ADMIN.pass.length < 10) {
+    console.error('[setup] BBG_ADMIN_PASSWORD must be at least 10 characters; ignoring it.');
+  } else {
+    const rec = hashPassword(BOOT_ADMIN.pass);
+    setDoc((d) => {
+      d.admin = { username: BOOT_ADMIN.user || 'admin', salt: rec.salt, hash: rec.hash, algo: rec.algo, ver: 1, updatedAt: Date.now() };
+    });
+    event('auth', 'admin account created from environment');
+  }
+}
 
 const runtime = new Runtime();
 const api = { httpRoutes: () => runtime.httpRoutes() };
@@ -30,7 +45,7 @@ function banner() {
     `  xray binary       : ${BIN.xray}`,
     `  sing-box binary   : ${BIN.singbox}`,
     `  mtg binary        : ${BIN.mtg}`,
-    `  setup required    : ${doc.admin ? 'no' : 'yes → open /setup'}`,
+    `  setup required    : ${doc.admin ? 'no' : `yes → open the panel and use setup key ${setupKey()}`}`,
     '',
     '  Routing checklist',
     `    public domain  → target port ${boundPanelPorts.includes(8080) ? '8080' : boundPanelPorts[0] || PORT}`,

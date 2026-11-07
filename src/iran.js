@@ -6,7 +6,8 @@
  * SNI inspection, active probing, and packet-length classifiers.
  */
 
-import { presetById } from './catalog.js';
+import crypto from 'node:crypto';
+import { presetById, freshParams, newRouteKey } from './catalog.js';
 
 /** Destinations verified to answer TLS 1.3 + HTTP/2 cleanly without DPI resets. */
 export const IRAN_SNI_CHOICES = [
@@ -287,15 +288,15 @@ export function applyProfile(doc, profileId) {
     const base = preset.core === 'singbox' ? 12000 : 11000;
     let port = base + 1;
     while (used.has(port)) port += 1;
-    const id = `ib${Math.random().toString(36).slice(2, 8)}`;
+    const id = `ib${crypto.randomBytes(3).toString('hex')}`;
     doc.inbounds.push({
       id,
       presetId: preset.id,
       label: preset.title.en,
       enabled: true,
-      routeKey: `bbg-${id}`,
+      routeKey: newRouteKey(),
       port,
-      params: { ...preset.defaults, ...(profile.overrides[presetId] || {}) },
+      params: freshParams(preset, profile.overrides[presetId] || {}),
     });
     have.add(presetId);
     changed.push({ preset: presetId, label: preset.title.en, enabled: true, created: true });
@@ -322,8 +323,9 @@ export function applyProfile(doc, profileId) {
     http: Boolean(tg.http && tg.http.enabled),
   };
   tg.mtproto = tg.mtproto || { engine: 'mtg', faketlsHost: 'www.samsung.com', secret: '', listenPort: 0 };
-  tg.socks = tg.socks || { user: 'bbg', pass: '' };
-  tg.http = tg.http || { user: 'bbg', pass: '' };
+  tg.socks = tg.socks || { user: `u${crypto.randomBytes(3).toString('hex')}`, pass: crypto.randomBytes(8).toString('hex') };
+  tg.http = tg.http || { user: `u${crypto.randomBytes(3).toString('hex')}`, pass: crypto.randomBytes(8).toString('hex') };
+  for (const p of [tg.socks, tg.http]) if (!p.pass || p.pass.length < 8) p.pass = crypto.randomBytes(8).toString('hex');
   tg.mtproto.enabled = Boolean(profile.telegram.mtproto);
   tg.socks.enabled = Boolean(profile.telegram.socks);
   tg.http.enabled = Boolean(profile.telegram.http);

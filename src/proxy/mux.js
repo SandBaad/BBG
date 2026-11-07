@@ -102,9 +102,10 @@ export class Mux {
       return;
     }
     if (kind === 'http') {
+      // The admin panel is only served on the HTTPS domain. Plain HTTP on the
+      // shared TCP port gets a generic web-server reply, nothing that names us.
       this.stats.http += 1;
-      socket.resume();
-      this.toPanel(socket, chunk);
+      socket.end('HTTP/1.1 400 Bad Request\r\nServer: nginx\r\nContent-Type: text/html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
       return;
     }
     if (kind === 'tls') {
@@ -175,29 +176,6 @@ export class Mux {
         }
       }
     }, 4000).unref?.();
-  }
-
-  toPanel(socket, chunk) {
-    if (!this.panelPort || this.panelPort === this.port) {
-      socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    const upstream = net.connect({ host: '127.0.0.1', port: this.panelPort, noDelay: true }, () => {
-      upstream.setNoDelay(true);
-      upstream.write(chunk);
-      socket.pipe(upstream);
-      upstream.pipe(socket);
-    });
-    const cleanup = () => {
-      socket.destroy();
-      upstream.destroy();
-    };
-    upstream.on('error', cleanup);
-    socket.on('error', cleanup);
-    socket.on('close', cleanup);
-    upstream.on('close', cleanup);
-    socket.resume();
   }
 
   pipeTo(socket, chunk, port, kind) {

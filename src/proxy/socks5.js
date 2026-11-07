@@ -6,6 +6,14 @@
  */
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
+import { resolveSafe, validPort } from './guard.js';
+import { timingSafeEqual } from 'node:crypto';
+
+function same(a, b) {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && timingSafeEqual(x, y);
+}
 
 const CMD = { CONNECT: 0x01, BIND: 0x02, UDP: 0x03 };
 const ATYP = { IPV4: 0x01, DOMAIN: 0x03, IPV6: 0x04 };
@@ -28,6 +36,12 @@ export class Socks5Server extends EventEmitter {
     let buffer = firstChunk && firstChunk.length ? firstChunk : Buffer.alloc(0);
     let stage = 'greeting';
     const auth = this.getUser();
+    // Disabled or misconfigured: drop the connection, never act as an open proxy.
+    if (!auth || !auth.user || !auth.pass) {
+      this.stats.denied += 1;
+      socket.destroy();
+      return null;
+    }
 
     const onData = (chunk) => {
       buffer = Buffer.concat([buffer, chunk]);
@@ -53,10 +67,14 @@ export class Socks5Server extends EventEmitter {
         if (buffer.length < 2) return;
         const nmethods = buffer[1];
         if (buffer.length < 2 + nmethods) return;
+        const offered = buffer.subarray(2, 2 + nmethods);
         buffer = buffer.subarray(2 + nmethods);
-        const needAuth = Boolean(auth && auth.user);
-        socket.write(Buffer.from([0x05, needAuth ? 0x02 : 0x00]));
-        stage = needAuth ? 'auth' : 'request';
+        if (!offered.includes(0x02)) {
+          socket.write(Buffer.from([0x05, 0xff]));
+          return fail();
+        }
+        socket.write(Buffer.from([0x05, 0x02]));
+        stage = 'auth';
         step();
         return;
       }
@@ -69,7 +87,7 @@ export class Socks5Server extends EventEmitter {
         const user = buffer.subarray(2, 2 + ulen).toString();
         const pass = buffer.subarray(3 + ulen, 3 + ulen + plen).toString();
         buffer = buffer.subarray(3 + ulen + plen);
-        if (user === auth.user && pass === auth.pass) {
+        if (same(user, auth.user) && same(pass, auth.pass)) {
           socket.write(Buffer.from([0x01, 0x00]));
           stage = 'request';
           step();
@@ -123,8 +141,20 @@ export class Socks5Server extends EventEmitter {
     return null;
   }
 
-  connect(client, host, port, rest) {
-    const upstream = net.connect({ host, port, noDelay: true, keepAlive: true, keepAliveInitialDelay: 15000 }, () => {
+  async connect(client, host, port, rest) {
+    let ip;
+    try {
+      if (!validPort(port)) throw new Error('bad port');
+      ip = await resolveSafe(host);
+    } catch {
+      this.stats.denied += 1;
+      try { client.end(Buffer.from([0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0])); } catch { /* ignore */ }
+      client.destroy();
+      return;
+    }
+    let counted = false;
+    const upstream = net.connect({ host: ip, port, noDelay: true, keepAlive: true, keepAliveInitialDelay: 15000 }, () => {
+      counted = true;
       upstream.setNoDelay(true);
       upstream.setKeepAlive(true, 15000);
       this.stats.conns += 1;
@@ -140,8 +170,11 @@ export class Socks5Server extends EventEmitter {
         this.stats.down += d.length;
       });
     });
+    let cleaned = false;
     const cleanup = () => {
-      this.stats.active = Math.max(0, this.stats.active - 1);
+      if (cleaned) return;
+      cleaned = true;
+      if (counted) this.stats.active = Math.max(0, this.stats.active - 1);
       try {
         client.destroy();
       } catch {

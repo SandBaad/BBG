@@ -6,6 +6,14 @@
  */
 import net from 'node:net';
 import tls from 'node:tls';
+import { timingSafeEqual } from 'node:crypto';
+import { resolveSafe, validPort } from './guard.js';
+
+function same(a, b) {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && timingSafeEqual(x, y);
+}
 
 export class HttpProxyServer {
   constructor({ getUser }) {
@@ -19,18 +27,25 @@ export class HttpProxyServer {
 
   authorized(header) {
     const auth = this.getUser();
-    if (!auth || !auth.user) return true;
+    if (!auth || !auth.user || !auth.pass) return false;
     if (!header || !header.startsWith('Basic ')) return false;
     try {
       const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
       const idx = decoded.indexOf(':');
-      return decoded.slice(0, idx) === auth.user && decoded.slice(idx + 1) === auth.pass;
+      if (idx < 0) return false;
+      return same(decoded.slice(0, idx), auth.user) && same(decoded.slice(idx + 1), auth.pass);
     } catch {
       return false;
     }
   }
 
   handle(socket, firstChunk) {
+    const auth = this.getUser();
+    if (!auth || !auth.user || !auth.pass) {
+      this.stats.denied += 1;
+      socket.destroy();
+      return;
+    }
     socket.setNoDelay(true);
     socket.setKeepAlive(true, 15000);
     let buffer = firstChunk && firstChunk.length ? firstChunk : Buffer.alloc(0);
@@ -52,9 +67,9 @@ export class HttpProxyServer {
     if (buffer.length) onData(Buffer.alloc(0));
   }
 
-  dispatch(socket, head, rest) {
+  async dispatch(socket, head, rest) {
     const lines = head.split('\r\n');
-    const [method, target, version] = lines[0].split(' ');
+    const [method, target] = lines[0].split(' ');
     const headers = {};
     for (const line of lines.slice(1)) {
       const i = line.indexOf(':');
@@ -63,15 +78,27 @@ export class HttpProxyServer {
     if (!this.authorized(headers['proxy-authorization'])) {
       this.stats.denied += 1;
       socket.end(
-        'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="BBG"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
+        'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="proxy"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
       );
       return;
     }
 
     if (method === 'CONNECT') {
-      const [host, portRaw] = target.split(':');
-      const port = Number(portRaw || 443);
-      const upstream = net.connect({ host, port, noDelay: true, keepAlive: true, keepAliveInitialDelay: 15000 }, () => {
+      const m = /^\[?([^\]]+?)\]?:(\d+)$/.exec(String(target || ''));
+      const host = m ? m[1] : '';
+      const port = m ? Number(m[2]) : 0;
+      let ip;
+      try {
+        if (!host || !validPort(port)) throw new Error('bad target');
+        ip = await resolveSafe(host);
+      } catch {
+        this.stats.denied += 1;
+        socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+        return;
+      }
+      let counted = false;
+      const upstream = net.connect({ host: ip, port, noDelay: true, keepAlive: true, keepAliveInitialDelay: 15000 }, () => {
+        counted = true;
         upstream.setNoDelay(true);
         upstream.setKeepAlive(true, 15000);
         this.stats.conns += 1;
@@ -87,8 +114,11 @@ export class HttpProxyServer {
           this.stats.down += d.length;
         });
       });
+      let cleaned = false;
       const cleanup = () => {
-        this.stats.active = Math.max(0, this.stats.active - 1);
+        if (cleaned) return;
+        cleaned = true;
+        if (counted) this.stats.active = Math.max(0, this.stats.active - 1);
         socket.destroy();
         upstream.destroy();
       };
@@ -105,60 +135,7 @@ export class HttpProxyServer {
       upstream.on('close', cleanup);
       return;
     }
-
-    let url;
-    try {
-      url = new URL(target);
-    } catch {
-      socket.end('HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n');
-      return;
-    }
-    const port = Number(url.port || 80);
-    const upstream = net.connect({ host: url.hostname, port, noDelay: true }, () => {
-      upstream.setNoDelay(true);
-      this.stats.conns += 1;
-      this.stats.active += 1;
-      const forwarded = { ...headers };
-      delete forwarded['proxy-authorization'];
-      delete forwarded['proxy-connection'];
-      const path = `${url.pathname}${url.search}`;
-      const rebuilt = [
-        `${method} ${path} ${version || 'HTTP/1.1'}`,
-        ...Object.entries(forwarded).map(([k, v]) => `${k}: ${v}`),
-        'Connection: close',
-        '',
-        '',
-      ].join('\r\n');
-      if (rest.length) {
-        upstream.write(Buffer.concat([Buffer.from(rebuilt, 'latin1'), rest]));
-      } else {
-        upstream.write(rebuilt);
-      }
-      socket.pipe(upstream);
-      upstream.pipe(socket);
-      socket.on('data', (d) => {
-        this.stats.up += d.length;
-      });
-      upstream.on('data', (d) => {
-        this.stats.down += d.length;
-      });
-    });
-    const cleanup = () => {
-      this.stats.active = Math.max(0, this.stats.active - 1);
-      socket.destroy();
-      upstream.destroy();
-    };
-    upstream.on('error', () => {
-      try {
-        socket.end('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n');
-      } catch {
-        /* ignore */
-      }
-      cleanup();
-    });
-    socket.on('error', cleanup);
-    socket.on('close', cleanup);
-    upstream.on('close', cleanup);
+    socket.end('HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
   }
 }
 
