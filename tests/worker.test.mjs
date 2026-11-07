@@ -35,7 +35,7 @@ const apiCall = async (path, { method = 'GET', body, headers = {} } = {}) => {
 };
 
 // First request initialises the Durable Object; read the random paths it chose.
-await call('/');
+await env.STORE.get().active();
 const DOC = () => env.STORE._inst.doc;
 const ADMIN = DOC().settings.adminPath;
 
@@ -291,7 +291,7 @@ await test('a bad ADMIN_PATH falls back to /panel', async () => {
   const m3 = await import('../worker/panel.js?bad-path');
   const env3 = { ADMIN_PATH: 'my panel/../x', ADMIN_PASSWORD: 'Some-Password-42' };
   env3.STORE = doNamespace(m3.PanelStore, env3);
-  await m3.default.fetch(new Request(`${HOST}/`), env3, ctx);
+  await env3.STORE.get().active();
   assert.equal(env3.STORE._inst.doc.settings.adminPath, '/panel');
 });
 
@@ -341,6 +341,22 @@ await test('a storage failure shows its message on the admin address and a plain
     assert.equal(b.status, 404);
     assert.doesNotMatch(await b.text(), /binding broke/);
     assert.ok(errors.some((e) => e.includes('binding broke')), 'logged for Workers Logs');
+  } finally { console.error = orig; }
+});
+
+await test('a stuck storage call becomes a readable error, and "/" never touches storage', async () => {
+  const m7 = await import('../worker/panel.js?stuck');
+  let calls = 0;
+  const stuck = new Proxy({}, { get: () => () => { calls += 1; return new Promise(() => {}); } });
+  const env7 = { ADMIN_PATH: 'p7', STORAGE_TIMEOUT_MS: 150, STORE: { idFromName: () => 'main', get: () => stuck } };
+  const orig = console.error; console.error = () => {};
+  try {
+    const root = await m7.default.fetch(new Request(`${HOST}/`), env7, ctx);
+    assert.equal(root.status, 404);
+    assert.equal(calls, 0, '"/" answered without storage');
+    const a = await m7.default.fetch(new Request(`${HOST}/p7/`), env7, ctx);
+    assert.equal(a.status, 503);
+    assert.match(await a.text(), /storage timed out \(active/);
   } finally { console.error = orig; }
 });
 

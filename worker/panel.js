@@ -351,7 +351,23 @@ export class PanelStore extends DurableObject {
 /* ── per-isolate cache of the tunnel allow-list ─────────────────────── */
 
 let ACTIVE = { at: 0, data: null, vless: null, trojan: null };
-const storeOf = (env) => env.STORE.get(env.STORE.idFromName('main'));
+/** Rejects instead of waiting forever, so a stuck storage call becomes a readable error. */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`storage timed out (${label}, ${ms} ms)`)), ms); });
+  return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
+}
+/** The Durable Object stub; every call is bounded by a time limit. */
+const storeOf = (env) => {
+  const stub = env.STORE.get(env.STORE.idFromName('main'));
+  const ms = Number(env.STORAGE_TIMEOUT_MS) || 10_000;
+  return new Proxy(stub, {
+    get: (target, name) => {
+      const value = target[name];
+      return typeof value === 'function' ? (...args) => withTimeout(target[name](...args), ms, String(name)) : value;
+    },
+  });
+};
 
 async function activeSet(env, force = false) {
   if (!force && ACTIVE.data && Date.now() - ACTIVE.at < ACTIVE_TTL_MS) return ACTIVE;
@@ -1133,6 +1149,9 @@ function failure(request, env, err, status = 500) {
 async function handle(request, env, ctx) {
   const url = new URL(request.url);
   const host = url.hostname;
+  // "/", "/favicon.ico" and "/robots.txt" are never ours: answer them without touching storage.
+  const isWs = (request.headers.get('upgrade') || '').toLowerCase() === 'websocket';
+  if (!isWs && ['/', '/favicon.ico', '/robots.txt'].includes(url.pathname)) return notFound();
   let cache;
   try {
     cache = await activeSet(env);
