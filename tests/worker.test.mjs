@@ -328,5 +328,21 @@ await test('changing ADMIN_PATH later moves the panel', async () => {
   assert.equal((await f('/first-path/')).status, 404);
 });
 
+await test('a storage failure shows its message on the admin address and a plain 404 elsewhere', async () => {
+  const m6 = await import('../worker/panel.js?broken');
+  const env6 = { ADMIN_PATH: 'p6', STORE: { idFromName: () => 'main', get: () => { throw new Error('binding broke'); } } };
+  const errors = [];
+  const orig = console.error; console.error = (...a) => errors.push(a.join(' '));
+  try {
+    const a = await m6.default.fetch(new Request(`${HOST}/p6/`), env6, ctx);
+    assert.equal(a.status, 503);
+    assert.match(await a.text(), /binding broke/);
+    const b = await m6.default.fetch(new Request(`${HOST}/elsewhere`), env6, ctx);
+    assert.equal(b.status, 404);
+    assert.doesNotMatch(await b.text(), /binding broke/);
+    assert.ok(errors.some((e) => e.includes('binding broke')), 'logged for Workers Logs');
+  } finally { console.error = orig; }
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ', some failed' : ''}`);
 process.exit(process.exitCode || 0);

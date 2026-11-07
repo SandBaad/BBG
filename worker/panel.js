@@ -112,10 +112,15 @@ export function sha224Hex(text) {
 
 const keyCache = new Map();
 async function hmacKey(secret) {
-  if (!keyCache.has(secret)) {
-    keyCache.set(secret, crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']));
+  // Cache the finished key, not the pending promise: a promise started in one request
+  // must not be awaited by another on Workers.
+  let key = keyCache.get(secret);
+  if (!key) {
+    key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    if (keyCache.size > 16) keyCache.clear();
+    keyCache.set(secret, key);
   }
-  return keyCache.get(secret);
+  return key;
 }
 async function hmac(secret, data) {
   return b64url(new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(secret), enc.encode(data))));
@@ -228,6 +233,8 @@ export class PanelStore extends DurableObject {
     super(ctx, env);
     this.doc = null;
     this.attempts = new Map();
+    // Nothing else runs until the state is loaded, so two first requests cannot both create it.
+    ctx.blockConcurrencyWhile(() => this.load());
   }
 
   async load() {
@@ -237,9 +244,11 @@ export class PanelStore extends DurableObject {
       doc = await freshDoc(this.env);
       await this.ctx.storage.put('doc', doc);
     }
+    const usage = (await this.ctx.storage.get('usage')) || {};
+    const traffic = (await this.ctx.storage.get('traffic')) || [];
+    this.usage = usage;
+    this.traffic = traffic;
     this.doc = doc;
-    this.usage = (await this.ctx.storage.get('usage')) || {};
-    this.traffic = (await this.ctx.storage.get('traffic')) || [];
   }
 
   async snapshot() {
@@ -1099,61 +1108,83 @@ async function api(request, env, url, rel, host) {
 
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const host = url.hostname;
-    let cache;
     try {
-      cache = await activeSet(env);
+      return await handle(request, env, ctx);
     } catch (err) {
-      return new Response('storage unavailable', { status: 503 });
+      return failure(request, env, err);
     }
-    const { paths } = cache.data;
-    const path = url.pathname;
-
-    if ((request.headers.get('upgrade') || '').toLowerCase() === 'websocket') {
-      if (paths.vless && path === paths.vless) return tunnel(request, env, ctx, 'vless', cache);
-      if (paths.trojan && path === paths.trojan) return tunnel(request, env, ctx, 'trojan', cache);
-      return notFound();
-    }
-
-    if (path === paths.admin) return Response.redirect(`${url.origin}${paths.admin}/`, 302);
-    if (path.startsWith(`${paths.admin}/`)) {
-      const rel = path.slice(paths.admin.length);
-      if (rel.startsWith('/api/')) {
-        try {
-          return await api(request, env, url, rel, host);
-        } catch (err) {
-          return json({ error: err && err.message === 'body too large' ? 'body too large' : 'bad request' }, 400);
-        }
-      }
-      if (rel === '/portal.html') return notFound();
-      return serveAsset(rel === '/' ? '/index.html' : rel, paths.admin) || notFound();
-    }
-
-    if (path.startsWith(`/${paths.sub}/`)) {
-      const [token, view] = path.slice(paths.sub.length + 2).split('/');
-      const snap = await storeOf(env).snapshot();
-      const user = snap.doc.users.find((u) => safeEqual(u.subToken, token || ''));
-      if (!user) return notFound();
-      const usage = snap.usage[user.id] || { up: 0, down: 0 };
-      if (view === 'page') return serveAsset('/portal.html', '', { 'portal-data': `/${paths.sub}/${token}/info` }) || notFound();
-      if (view === 'info') {
-        const st = userStatus(user, usage);
-        const links = st === 'active' ? linksFor(snap.doc, user, host) : [];
-        return json({
-          name: user.name, status: st, usage: { up: usage.up, down: usage.down, total: usage.up + usage.down }, quotaBytes: user.quotaBytes, expiresAt: user.expiresAt,
-          subUrl: `${url.origin}/${paths.sub}/${token}`,
-          links: links.map((l) => ({ label: l.label, short: l.short, uri: l.uri, protocol: l.protocol, transport: l.transport })),
-        });
-      }
-      const format = String(view || url.searchParams.get('format') || 'base64').toLowerCase();
-      if (!['base64', 'links', 'xray', 'singbox', 'clash'].includes(format)) return notFound();
-      return subscription(snap.doc, user, usage, host, format);
-    }
-
-    if (path.startsWith('/fonts/') || path.startsWith('/assets/')) {
-      return serveAsset(path, paths.admin) || notFound();
-    }
-    return notFound();
   },
 };
+
+/** Logs the error (Workers Logs) and explains it on the admin address only. */
+function failure(request, env, err, status = 500) {
+  const path = new URL(request.url).pathname;
+  console.error(`bbg: ${request.method} ${path} failed:`, err && err.stack ? err.stack : String(err));
+  const admin = envAdminPath(env) || '/panel';
+  if (path === admin || path.startsWith(`${admin}/`)) {
+    const msg = err && err.message ? err.message : String(err);
+    return new Response(`BBG panel error (${status}): ${msg}\n\nWait a minute and reload. If it stays, send this text to the developer.\n`, {
+      status, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+    });
+  }
+  return new Response(NOT_FOUND_HTML, { status: 404, headers: { 'content-type': 'text/html', server: 'nginx' } });
+}
+
+async function handle(request, env, ctx) {
+  const url = new URL(request.url);
+  const host = url.hostname;
+  let cache;
+  try {
+    cache = await activeSet(env);
+  } catch (err) {
+    return failure(request, env, err, 503);
+  }
+  const { paths } = cache.data;
+  const path = url.pathname;
+
+  if ((request.headers.get('upgrade') || '').toLowerCase() === 'websocket') {
+    if (paths.vless && path === paths.vless) return tunnel(request, env, ctx, 'vless', cache);
+    if (paths.trojan && path === paths.trojan) return tunnel(request, env, ctx, 'trojan', cache);
+    return notFound();
+  }
+
+  if (path === paths.admin) return Response.redirect(`${url.origin}${paths.admin}/`, 302);
+  if (path.startsWith(`${paths.admin}/`)) {
+    const rel = path.slice(paths.admin.length);
+    if (rel.startsWith('/api/')) {
+      try {
+        return await api(request, env, url, rel, host);
+      } catch (err) {
+        return json({ error: err && err.message === 'body too large' ? 'body too large' : 'bad request' }, 400);
+      }
+    }
+    if (rel === '/portal.html') return notFound();
+    return serveAsset(rel === '/' ? '/index.html' : rel, paths.admin) || notFound();
+  }
+
+  if (path.startsWith(`/${paths.sub}/`)) {
+    const [token, view] = path.slice(paths.sub.length + 2).split('/');
+    const snap = await storeOf(env).snapshot();
+    const user = snap.doc.users.find((u) => safeEqual(u.subToken, token || ''));
+    if (!user) return notFound();
+    const usage = snap.usage[user.id] || { up: 0, down: 0 };
+    if (view === 'page') return serveAsset('/portal.html', '', { 'portal-data': `/${paths.sub}/${token}/info` }) || notFound();
+    if (view === 'info') {
+      const st = userStatus(user, usage);
+      const links = st === 'active' ? linksFor(snap.doc, user, host) : [];
+      return json({
+        name: user.name, status: st, usage: { up: usage.up, down: usage.down, total: usage.up + usage.down }, quotaBytes: user.quotaBytes, expiresAt: user.expiresAt,
+        subUrl: `${url.origin}/${paths.sub}/${token}`,
+        links: links.map((l) => ({ label: l.label, short: l.short, uri: l.uri, protocol: l.protocol, transport: l.transport })),
+      });
+    }
+    const format = String(view || url.searchParams.get('format') || 'base64').toLowerCase();
+    if (!['base64', 'links', 'xray', 'singbox', 'clash'].includes(format)) return notFound();
+    return subscription(snap.doc, user, usage, host, format);
+  }
+
+  if (path.startsWith('/fonts/') || path.startsWith('/assets/')) {
+    return serveAsset(path, paths.admin) || notFound();
+  }
+  return notFound();
+}

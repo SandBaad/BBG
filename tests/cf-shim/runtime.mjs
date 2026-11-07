@@ -45,7 +45,12 @@ export function memoryStorage() {
 /** A namespace whose stub copies arguments/results like real RPC does. */
 export function doNamespace(Klass, env) {
   const storage = memoryStorage();
-  const inst = new Klass({ storage }, env);
-  const stub = new Proxy({}, { get: (_, name) => async (...args) => structuredClone(await inst[name](...structuredClone(args))) });
+  const ctx = {
+    storage,
+    _gate: Promise.resolve(),
+    blockConcurrencyWhile(fn) { this._gate = Promise.resolve().then(fn); return this._gate; },
+  };
+  const inst = new Klass(ctx, env);
+  const stub = new Proxy({}, { get: (_, name) => async (...args) => { await ctx._gate; return structuredClone(await inst[name](...structuredClone(args))); } });
   return { idFromName: () => 'main', get: () => stub, _inst: inst, _storage: storage };
 }
