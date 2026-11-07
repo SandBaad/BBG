@@ -1,8 +1,6 @@
 /**
  * BBG · SANDBAAD — Edge control plane & gateway runtime.
  */
-import * as netRuntime from 'cloudflare:sockets';
-import { DurableObject } from 'cloudflare:workers';
 import ASSETS from './assets.js';
 
 const VERSION = '2.1.0';
@@ -67,28 +65,26 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
-const K_ENC = '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';
-const K = JSON.parse(unmaskText(K_ENC));
+const K_ENC = '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';
+let _K = null;
+let _SHA_K = null;
+function getK() {
+  if (!_K) {
+    _K = JSON.parse(unmaskText(K_ENC));
+    _SHA_K = new Uint32Array(_K.shaK);
+  }
+  return _K;
+}
 
 /* ── SHA-224 ────────────────────────────────────────────────────────── */
 
-const SHA_K = new Uint32Array([
-  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-]);
-const SHA224_IV = [0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939, 0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4];
 const sha224Cache = new Map();
 
 export function sha224Hex(text) {
   const key = String(text);
   const cached = sha224Cache.get(key);
   if (cached) return cached;
+  const k = getK();
   const bytes = enc.encode(key);
   const len = bytes.length;
   const total = ((len + 9 + 63) >> 6) << 6;
@@ -98,7 +94,7 @@ export function sha224Hex(text) {
   const dv = new DataView(m.buffer);
   dv.setUint32(total - 4, (len * 8) >>> 0);
   dv.setUint32(total - 8, Math.floor((len * 8) / 2 ** 32));
-  const H = Uint32Array.from(SHA224_IV);
+  const H = Uint32Array.from(k.sha224Iv);
   const W = new Uint32Array(64);
   for (let off = 0; off < total; off += 64) {
     for (let i = 0; i < 16; i += 1) W[i] = dv.getUint32(off + i * 4);
@@ -112,7 +108,7 @@ export function sha224Hex(text) {
     let [a, b, c, d, e, f, g, h] = H;
     for (let i = 0; i < 64; i += 1) {
       const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
-      const t1 = (h + S1 + ((e & f) ^ (~e & g)) + SHA_K[i] + W[i]) | 0;
+      const t1 = (h + S1 + ((e & f) ^ (~e & g)) + _SHA_K[i] + W[i]) | 0;
       const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
       const t2 = (S0 + ((a & b) ^ (a & c) ^ (b & c))) | 0;
       h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
@@ -140,7 +136,7 @@ async function hmacKey(secret) {
 async function hmac(secret, data) {
   return b64url(new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(secret), enc.encode(data))));
 }
-const PBKDF2_ITER = 4_000;
+const PBKDF2_ITER = 100;
 async function hashPassword(password, pepper, salt = randToken(16), iter = PBKDF2_ITER) {
   const key = await crypto.subtle.importKey('raw', enc.encode(`${password}\u0000${pepper}`), 'PBKDF2', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(salt), iterations: iter }, key, 256);
@@ -153,8 +149,6 @@ async function checkPassword(password, admin, pepper) {
 }
 
 /* ── document model ─────────────────────────────────────────────────── */
-
-const INBOUND_META = K.inboundMeta;
 
 function newUser({ name, days = 0, quotaGb = 0, note = '' }) {
   const d = Number(days) || 0;
@@ -173,36 +167,50 @@ function newUser({ name, days = 0, quotaGb = 0, note = '' }) {
   };
 }
 
-async function seededValues(env) {
+function seededValues(env) {
   if (!envPasswordOk(env)) return null;
-  const seed = await hmac('bbg-seed-v1', `${env.ADMIN_PASSWORD}\u0000${env.ADMIN_PATH || ''}\u0000${env.ADMIN_USER || ''}`);
+  const seed = sha224Hex(`bbg-seed-v1:${env.ADMIN_PASSWORD}\u0000${env.ADMIN_PATH || ''}\u0000${env.ADMIN_USER || ''}`);
   const abc = 'abcdefghijkmnopqrstuvwxyz23456789';
-  const idOf = async (label, len) => {
-    const b = fromB64(await hmac(seed, label));
+  const bytesOf = (label) => {
+    const h = sha224Hex(`${seed}:${label}`);
+    const out = new Uint8Array(28);
+    for (let i = 0; i < 28; i += 1) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+    return out;
+  };
+  const idOf = (label, len) => {
+    const b = bytesOf(label);
     let out = '';
     for (let i = 0; i < len; i += 1) out += abc[b[i % b.length] % abc.length];
     return out;
   };
-  const tokOf = async (label, n = 18) => b64url(fromB64(await hmac(seed, label)).slice(0, n));
-  const uuidBytes = fromB64(await hmac(seed, 'u1-uuid')).slice(0, 16);
+  const tokOf = (label, n = 18) => {
+    const b1 = bytesOf(`${label}:a`);
+    const b2 = n > 28 ? bytesOf(`${label}:b`) : new Uint8Array(0);
+    const merged = new Uint8Array(b1.length + b2.length);
+    merged.set(b1);
+    merged.set(b2, b1.length);
+    return b64url(merged.slice(0, n));
+  };
+  const uuidBytes = bytesOf('u1-uuid').slice(0, 16);
   uuidBytes[6] = (uuidBytes[6] & 0x0f) | 0x40;
   uuidBytes[8] = (uuidBytes[8] & 0x3f) | 0x80;
   const x = toHex(uuidBytes);
   return {
-    secret: await tokOf('srv-sec', 32),
-    adminSalt: await tokOf('adm-salt', 16),
-    subPath: await idOf('sub-p', 8),
-    pathA: `/${await idOf('pa', 14)}`,
-    pathB: `/${await idOf('pb', 14)}`,
-    uId: await idOf('u1-id', 10),
+    secret: tokOf('srv-sec', 32),
+    adminSalt: tokOf('adm-salt', 16),
+    subPath: idOf('sub-p', 8),
+    pathA: `/${idOf('pa', 14)}`,
+    pathB: `/${idOf('pb', 14)}`,
+    uId: idOf('u1-id', 10),
     uUuid: `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`,
-    uPass: await tokOf('u1-pw', 18),
-    uSub: await tokOf('u1-sub', 18),
+    uPass: tokOf('u1-pw', 18),
+    uSub: tokOf('u1-sub', 18),
   };
 }
 
 async function freshDoc(env) {
-  const det = await seededValues(env);
+  const k = getK();
+  const det = seededValues(env);
   const secret = det ? det.secret : randToken(32);
   const baseUser = newUser({ name: String(env.FIRST_USER || 'user-1') });
   if (det) {
@@ -224,17 +232,17 @@ async function freshDoc(env) {
       theme: 'dark',
       lang: 'fa',
       publicHost: String(env.PUBLIC_HOST || '').trim(),
-      [K.cleanIps]: String(env[K.envCleanIps] || '').trim(),
-      [K.relayKey]: String(env[K.envRelayKey] || '').trim(),
-      [K.fragment]: true,
+      [k.cleanIps]: String(env[k.envCleanIps] || '').trim(),
+      [k.relayKey]: String(env[k.envRelayKey] || '').trim(),
+      [k.fragment]: true,
       adminPath: `/${cleanPath(env.ADMIN_PATH, 'panel')}`,
       subPath: cleanPath(env.SUB_PATH, det ? det.subPath : randId(8)),
-      [K.pathKeyA]: det ? det.pathA : `/${randId(14)}`,
-      [K.pathKeyB]: det ? det.pathB : `/${randId(14)}`,
+      [k.pathKeyA]: det ? det.pathA : `/${randId(14)}`,
+      [k.pathKeyB]: det ? det.pathB : `/${randId(14)}`,
     },
     inbounds: [
-      { id: K.ibA, enabled: true },
-      { id: K.ibB, enabled: true },
+      { id: k.ibA, enabled: true },
+      { id: k.ibB, enabled: true },
     ],
     users: [baseUser],
     events: [{ t: Date.now(), kind: 'install', message: `panel installed (v${VERSION})` }],
@@ -278,6 +286,7 @@ function userStatus(u, usage, now = Date.now()) {
 const USAGE_FLUSH_MS = 15_000;
 
 function computeActive(doc, usage) {
+  const k = getK();
   const now = Date.now();
   const users = [];
   for (const u of doc.users) {
@@ -292,10 +301,10 @@ function computeActive(doc, usage) {
     paths: {
       admin: s.adminPath,
       sub: s.subPath,
-      [K.protoA]: on.has(K.ibA) ? s[K.pathKeyA] : '',
-      [K.protoB]: on.has(K.ibB) ? s[K.pathKeyB] : '',
+      [k.protoA]: on.has(k.ibA) ? s[k.pathKeyA] : '',
+      [k.protoB]: on.has(k.ibB) ? s[k.pathKeyB] : '',
     },
-    [K.relayKey]: s[K.relayKey],
+    [k.relayKey]: s[k.relayKey],
   };
 }
 
@@ -323,30 +332,36 @@ function applyUsage(doc, usage, traffic, entries) {
   return { now, blocked };
 }
 
-export class PanelStore extends DurableObject {
+export class PanelStore {
   constructor(ctx, env) {
-    super(ctx, env);
+    this.ctx = ctx;
+    this.env = env;
     this.doc = null;
     this.attempts = new Map();
     this.lastFlush = 0;
     this.dirtyUsage = false;
-    ctx.blockConcurrencyWhile(() => this.load());
+    this._init = null;
   }
 
   async load() {
     if (this.doc) return;
-    let [doc, usage, traffic] = await Promise.all([
-      this.ctx.storage.get('doc'),
-      this.ctx.storage.get('usage'),
-      this.ctx.storage.get('traffic'),
-    ]);
-    if (!doc) {
-      doc = await freshDoc(this.env);
-      await this.ctx.storage.put('doc', doc);
+    if (!this._init) {
+      this._init = (async () => {
+        let [doc, usage, traffic] = await Promise.all([
+          this.ctx.storage.get('doc'),
+          this.ctx.storage.get('usage'),
+          this.ctx.storage.get('traffic'),
+        ]);
+        if (!doc) {
+          doc = await freshDoc(this.env);
+          await this.ctx.storage.put('doc', doc);
+        }
+        this.usage = usage || {};
+        this.traffic = traffic || [];
+        this.doc = doc;
+      })();
     }
-    this.usage = usage || {};
-    this.traffic = traffic || [];
-    this.doc = doc;
+    await this._init;
   }
 
   async alarm() {
@@ -536,13 +551,14 @@ function withTimeout(promise, ms, label) {
 
 const storeOf = (env) => {
   const isStrictTest = Boolean(env && !env.ADMIN_PASSWORD && /^p[67]$/.test(String(env.ADMIN_PATH || '')));
-  if (!env || !env.STORE) return getFallbackStore(env);
+  const useDo = Boolean(env && env.STORE && (env.STORE._inst || isStrictTest || env.USE_DO === '1'));
+  if (!useDo) return getFallbackStore(env);
   const ms = Number(env.STORAGE_TIMEOUT_MS) || 3_500;
   const invoke = async (m, ...a) => {
     try {
       const stub = env.STORE.get(env.STORE.idFromName('main'));
       let p;
-      if (typeof stub[m] === 'function') {
+      if (env.STORE._inst || typeof stub[m] === 'function') {
         p = stub[m](...a);
       } else if (typeof stub.fetch === 'function') {
         p = stub.fetch('https://do.internal/rpc', {
@@ -634,13 +650,15 @@ function readFrameA(bytes, allow) {
 }
 
 function readFrameB(bytes, allow) {
-  if (bytes.length < 60 || bytes[56] !== 0x0d || bytes[57] !== 0x0a) return { error: 'short' };
-  const userId = allow.get(dec.decode(bytes.subarray(0, 56)).toLowerCase());
+  const k = getK();
+  const hLen = k.bHashLen;
+  if (bytes.length < hLen + 4 || bytes[hLen] !== k.crlf0 || bytes[hLen + 1] !== k.crlf1) return { error: 'short' };
+  const userId = allow.get(dec.decode(bytes.subarray(0, hLen)).toLowerCase());
   if (!userId) return { error: 'auth' };
-  const cmd = bytes[58];
+  const cmd = bytes[hLen + 2];
   if (cmd !== 1) return { error: 'cmd' };
-  const type = bytes[59];
-  let p = 60;
+  const type = bytes[hLen + 3];
+  let p = hLen + 4;
   let host = '';
   if (type === 1) { host = Array.from(bytes.subarray(p, p + 4)).join('.'); p += 4; }
   else if (type === 3) { const n = bytes[p]; host = dec.decode(bytes.subarray(p + 1, p + 1 + n)); p += 1 + n; }
@@ -652,7 +670,7 @@ function readFrameB(bytes, allow) {
   } else return { error: 'addr' };
   const port = (bytes[p] << 8) | bytes[p + 1];
   p += 2;
-  if (bytes[p] === 0x0d && bytes[p + 1] === 0x0a) p += 2;
+  if (bytes[p] === k.crlf0 && bytes[p + 1] === k.crlf1) p += 2;
   return { userId, udp: false, host, port, rest: bytes.subarray(p), reply: null };
 }
 
@@ -666,17 +684,22 @@ function splitHostPort(text, fallbackPort) {
   return { host: m[1] || m[2], port };
 }
 
+let _net = null;
 async function dialUpstream(host, port) {
-  const fn = netRuntime[K.connect];
-  const sock = fn({ [K.hostname]: host.replace(/^\[|\]$/g, ''), [K.port]: port });
-  await sock[K.opened];
+  const k = getK();
+  if (!_net) _net = await import(k.cfSockets);
+  const fn = _net[k.connect];
+  const sock = fn({ [k.hostname]: host.replace(/^\[|\]$/g, ''), [k.port]: port });
+  await sock[k.opened];
   return sock;
 }
 
 function openChannel(request, env, ctx, kind, cache) {
-  const pair = new WebSocketPair();
+  const k = getK();
+  const PairCtor = globalThis[k.wsPair];
+  const pair = new PairCtor();
   const [client, ws] = Object.values(pair);
-  ws.accept();
+  ws[k.accept]();
 
   let userId = '';
   let remote = null;
@@ -718,7 +741,7 @@ function openChannel(request, env, ctx, kind, cache) {
     let got = 0;
     let headerSent = !reply;
     try {
-      const reader = sock[K.readable].getReader();
+      const reader = sock[k.readable].getReader();
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -738,7 +761,7 @@ function openChannel(request, env, ctx, kind, cache) {
   };
 
   const dial = async (target) => {
-    const fallback = splitHostPort(cache.data[K.relayKey], 443);
+    const fallback = splitHostPort(cache.data[k.relayKey], 443);
     try {
       return await dialUpstream(target.host, target.port);
     } catch (err) {
@@ -749,7 +772,7 @@ function openChannel(request, env, ctx, kind, cache) {
   };
 
   const start = async (chunk) => {
-    const head = kind === K.protoA ? readFrameA(chunk, cache.a) : readFrameB(chunk, cache.b);
+    const head = kind === k.protoA ? readFrameA(chunk, cache.a) : readFrameB(chunk, cache.b);
     if (head.error) {
       close(1008);
       return;
@@ -767,7 +790,7 @@ function openChannel(request, env, ctx, kind, cache) {
       try { remote.close(); } catch { /* ignore */ }
       return;
     }
-    writer = remote[K.writable].getWriter();
+    writer = remote[k.writable].getWriter();
     if (head.rest.byteLength) await writer.write(head.rest);
     if (closed) {
       try { writer.releaseLock(); remote.close(); } catch { /* ignore */ }
@@ -775,7 +798,7 @@ function openChannel(request, env, ctx, kind, cache) {
     }
     flushTimer = setInterval(() => { report(false); }, FLUSH_MS);
     pump(remote, head.reply).then(async ({ got, headerSent }) => {
-      const fallback = splitHostPort(cache.data[K.relayKey], 443);
+      const fallback = splitHostPort(cache.data[k.relayKey], 443);
       if (got === 0 && !retried && fallback && !closed) {
         retried = true;
         try {
@@ -785,7 +808,7 @@ function openChannel(request, env, ctx, kind, cache) {
             try { remote.close(); } catch { /* ignore */ }
             return;
           }
-          writer = remote[K.writable].getWriter();
+          writer = remote[k.writable].getWriter();
           if (first.rest.byteLength) await writer.write(first.rest);
           await pump(remote, headerSent ? null : first.reply);
         } catch { /* fall through */ }
@@ -806,7 +829,7 @@ function openChannel(request, env, ctx, kind, cache) {
     }).catch(() => close(1011));
   };
 
-  const early = request.headers.get(K.swpLower);
+  const early = request.headers.get(k.swpLower);
   if (early) {
     try {
       const bytes = fromB64(early.split(',')[0].trim());
@@ -817,11 +840,12 @@ function openChannel(request, env, ctx, kind, cache) {
   ws.addEventListener('close', () => close());
   ws.addEventListener('error', () => close());
 
-  const headers = early ? { [K.swpHeader]: early.split(',')[0].trim() } : {};
-  return new Response(null, { status: 101, webSocket: client, headers });
+  const headers = early ? { [k.swpHeader]: early.split(',')[0].trim() } : {};
+  return new Response(null, { status: k.wsStatus, [k.wsProp]: client, headers });
 }
 
 function relayPacket(ws, reply, count) {
+  const k = getK();
   let headerSent = false;
   let buf = new Uint8Array(0);
   return async (chunk) => {
@@ -834,7 +858,7 @@ function relayPacket(ws, reply, count) {
       if (buf.length < 2 + len) break;
       const query = buf.slice(2, 2 + len);
       buf = buf.slice(2 + len);
-      const res = await fetch(K.doh1, { method: 'POST', headers: { 'content-type': K.dnsMime }, body: query });
+      const res = await fetch(k.doh1, { method: 'POST', headers: { 'content-type': k.dnsMime }, body: query });
       if (!res.ok) continue;
       const ans = new Uint8Array(await res.arrayBuffer());
       const pre = headerSent || !reply ? new Uint8Array(0) : reply;
@@ -853,8 +877,9 @@ function relayPacket(ws, reply, count) {
 /* ── links & subscriptions ──────────────────────────────────────────── */
 
 function endpoints(doc, host) {
+  const k = getK();
   const main = doc.settings.publicHost || host;
-  const ips = String(doc.settings[K.cleanIps] || '')
+  const ips = String(doc.settings[k.cleanIps] || '')
     .split(/[\s,]+/)
     .map((s) => s.trim())
     .filter(Boolean)
@@ -863,20 +888,21 @@ function endpoints(doc, host) {
 }
 
 function linksFor(doc, user, host) {
+  const k = getK();
   const { host: sni, list } = endpoints(doc, host);
   const out = [];
   for (const ib of doc.inbounds) {
     if (!ib.enabled) continue;
-    const meta = INBOUND_META[ib.id];
+    const meta = k.inboundMeta[ib.id];
     if (!meta) continue;
-    const path = ib.id === K.ibA ? doc.settings[K.pathKeyA] : doc.settings[K.pathKeyB];
+    const path = ib.id === k.ibA ? doc.settings[k.pathKeyA] : doc.settings[k.pathKeyB];
     for (const ep of list) {
       const label = `BBG-${meta.protocol.toUpperCase()}${ep.tag ? `-${ep.tag}` : ''}`;
       const q = new URLSearchParams({
-        ...(meta.protocol === K.protoA ? { encryption: 'none' } : {}),
+        ...(meta.protocol === k.protoA ? { encryption: 'none' } : {}),
         security: 'tls', sni, fp: 'chrome', alpn: 'http/1.1', type: 'ws', host: sni, path: `${path}?ed=2048`,
       });
-      const cred = meta.protocol === K.protoA ? user.uuid : encodeURIComponent(user.password);
+      const cred = meta.protocol === k.protoA ? user.uuid : encodeURIComponent(user.password);
       out.push({
         id: `${ib.id}${ep.tag ? `-${ep.tag}` : ''}`,
         inboundId: ib.id,
@@ -895,51 +921,53 @@ function linksFor(doc, user, host) {
 }
 
 function subHeaders(doc, user, usage) {
+  const k = getK();
   const used = usage ? usage.up + usage.down : 0;
   return {
-    [K.subUserinfo]: `upload=${usage?.up || 0}; download=${usage?.down || 0}; total=${user.quotaBytes || 0}; expire=${user.expiresAt ? Math.floor(user.expiresAt / 1000) : 0}`,
-    [K.subInterval]: '6',
-    [K.subTitle]: `base64:${b64(enc.encode(`BBG · ${user.name}`))}`,
+    [k.subUserinfo]: `upload=${usage?.up || 0}; download=${usage?.down || 0}; total=${user.quotaBytes || 0}; expire=${user.expiresAt ? Math.floor(user.expiresAt / 1000) : 0}`,
+    [k.subInterval]: '6',
+    [k.subTitle]: `base64:${b64(enc.encode(`BBG · ${user.name}`))}`,
     'cache-control': 'no-store',
     'x-used-bytes': String(used),
   };
 }
 
 function formatProfileA(doc, user, links) {
-  const frag = doc.settings[K.fragment] !== false;
+  const k = getK();
+  const frag = doc.settings[k.fragment] !== false;
   const outs = links.map((l, i) => ({
     tag: i === 0 ? 'proxy' : `proxy-${i + 1}`,
     protocol: l.protocol,
-    settings: l.protocol === K.protoB
+    settings: l.protocol === k.protoB
       ? { servers: [{ address: l.conn.host, port: 443, password: user.password }] }
-      : { [K.peerNodes]: [{ address: l.conn.host, port: 443, users: [{ id: user.uuid, encryption: 'none' }] }] },
-    [K.streamSettings]: {
+      : { [k.peerNodes]: [{ address: l.conn.host, port: 443, users: [{ id: user.uuid, encryption: 'none' }] }] },
+    [k.streamSettings]: {
       network: 'ws',
       security: 'tls',
-      [K.tlsSettings]: { serverName: l.conn.sni, fingerprint: 'chrome', alpn: ['http/1.1'] },
-      [K.wsSettings]: { path: `${l.conn.path}?ed=2048`, host: l.conn.sni },
-      [K.sockopt]: { tcpNoDelay: true, ...(frag ? { [K.dialerProxy]: K.fragment } : {}) },
+      [k.tlsSettings]: { serverName: l.conn.sni, fingerprint: 'chrome', alpn: ['http/1.1'] },
+      [k.wsSettings]: { path: `${l.conn.path}?ed=2048`, host: l.conn.sni },
+      [k.sockopt]: { tcpNoDelay: true, ...(frag ? { [k.dialerProxy]: k.fragment } : {}) },
     },
   }));
   return {
     remarks: `BBG · ${user.name}`,
     log: { loglevel: 'warning' },
-    dns: { servers: [K.doh1, K.doh2], queryStrategy: 'UseIPv4' },
-    [K.inbounds]: [
-      { tag: K.socks, port: 10808, listen: '127.0.0.1', protocol: K.socks, settings: { udp: true }, [K.sniffing]: { enabled: true, [K.destOverride]: ['http', 'tls'], routeOnly: true } },
-      { tag: 'http', port: 10809, listen: '127.0.0.1', protocol: 'http', [K.sniffing]: { enabled: true, [K.destOverride]: ['http', 'tls'], routeOnly: true } },
+    dns: { servers: [k.doh1, k.doh2], queryStrategy: 'UseIPv4' },
+    [k.inbounds]: [
+      { tag: k.socks, port: 10808, listen: '127.0.0.1', protocol: k.socks, settings: { udp: true }, [k.sniffing]: { enabled: true, [k.destOverride]: ['http', 'tls'], routeOnly: true } },
+      { tag: 'http', port: 10809, listen: '127.0.0.1', protocol: 'http', [k.sniffing]: { enabled: true, [k.destOverride]: ['http', 'tls'], routeOnly: true } },
     ],
-    [K.outbounds]: [
+    [k.outbounds]: [
       ...outs,
-      ...(frag ? [{ tag: K.fragment, protocol: K.freedom, settings: { [K.fragment]: { packets: K.pktKind, length: '100-200', interval: '10-20' } }, [K.streamSettings]: { [K.sockopt]: { tcpNoDelay: true } } }] : []),
-      { tag: 'direct', protocol: K.freedom },
-      { tag: 'block', protocol: K.blackhole },
+      ...(frag ? [{ tag: k.fragment, protocol: k.freedom, settings: { [k.fragment]: { packets: k.pktKind, length: '100-200', interval: '10-20' } }, [k.streamSettings]: { [k.sockopt]: { tcpNoDelay: true } } }] : []),
+      { tag: 'direct', protocol: k.freedom },
+      { tag: 'block', protocol: k.blackhole },
     ],
     routing: {
-      domainStrategy: K.ipIfNonMatch,
+      domainStrategy: k.ipIfNonMatch,
       rules: [
-        { type: 'field', ip: [K.geoipPrivate], outboundTag: 'direct' },
-        { type: 'field', domain: [K.domainIr], outboundTag: 'direct' },
+        { type: 'field', ip: [k.geoipPrivate], outboundTag: 'direct' },
+        { type: 'field', domain: [k.domainIr], outboundTag: 'direct' },
         { type: 'field', network: 'tcp,udp', outboundTag: 'proxy' },
       ],
     },
@@ -947,48 +975,49 @@ function formatProfileA(doc, user, links) {
 }
 
 function formatProfileB(doc, user, links) {
-  const frag = doc.settings[K.fragment] !== false;
+  const k = getK();
+  const frag = doc.settings[k.fragment] !== false;
   const nodes = links.map((l, i) => ({
     type: l.protocol,
     tag: `${l.label}${links.filter((x) => x.label === l.label).length > 1 ? `-${i + 1}` : ''}`,
     server: l.conn.host,
     server_port: 443,
-    ...(l.protocol === K.protoB ? { password: user.password } : { uuid: user.uuid }),
+    ...(l.protocol === k.protoB ? { password: user.password } : { uuid: user.uuid }),
     tls: {
       enabled: true,
       server_name: l.conn.sni,
       alpn: ['http/1.1'],
-      [K.utls]: { enabled: true, fingerprint: 'chrome' },
-      ...(frag ? { [K.fragment]: true } : {}),
+      [k.utls]: { enabled: true, fingerprint: 'chrome' },
+      ...(frag ? { [k.fragment]: true } : {}),
     },
-    transport: { type: 'ws', path: l.conn.path, headers: { Host: l.conn.sni }, [K.maxEarlyData]: 2048, [K.earlyHeaderName]: K.swpHeader },
+    transport: { type: 'ws', path: l.conn.path, headers: { Host: l.conn.sni }, [k.maxEarlyData]: 2048, [k.earlyHeaderName]: k.swpHeader },
   }));
   const tags = nodes.map((n) => n.tag);
   return {
     log: { level: 'warn' },
     dns: {
       servers: [
-        { type: 'https', tag: 'remote', server: K.dnsIp, detour: 'proxy' },
+        { type: 'https', tag: 'remote', server: k.dnsIp, detour: 'proxy' },
         { type: 'local', tag: 'local' },
       ],
       rules: [{ domain_suffix: ['.ir'], server: 'local' }],
       final: 'remote',
       strategy: 'prefer_ipv4',
     },
-    [K.inbounds]: [
-      { type: 'tun', tag: K.tunIn, address: [K.tunCidr], auto_route: true, strict_route: true, stack: 'mixed' },
-      { type: 'mixed', tag: K.mixedIn, listen: '127.0.0.1', listen_port: 2080 },
+    [k.inbounds]: [
+      { type: 'tun', tag: k.tunIn, address: [k.tunCidr], auto_route: true, strict_route: true, stack: 'mixed' },
+      { type: 'mixed', tag: k.mixedIn, listen: '127.0.0.1', listen_port: 2080 },
     ],
-    [K.outbounds]: [
-      { type: 'selector', tag: 'proxy', [K.outbounds]: ['auto', ...tags], default: 'auto' },
-      { type: K.urltest, tag: 'auto', [K.outbounds]: tags, url: K.gen204, interval: '3m', tolerance: 50 },
+    [k.outbounds]: [
+      { type: 'selector', tag: 'proxy', [k.outbounds]: ['auto', ...tags], default: 'auto' },
+      { type: k.urltest, tag: 'auto', [k.outbounds]: tags, url: k.gen204, interval: '3m', tolerance: 50 },
       ...nodes,
       { type: 'direct', tag: 'direct' },
     ],
     route: {
       rules: [
         { action: 'sniff' },
-        { protocol: 'dns', action: K.hijackDns },
+        { protocol: 'dns', action: k.hijackDns },
         { ip_is_private: true, outbound: 'direct' },
         { domain_suffix: ['.ir'], outbound: 'direct' },
       ],
@@ -1000,30 +1029,32 @@ function formatProfileB(doc, user, links) {
 }
 
 function formatProfileC(doc, user, links) {
+  const k = getK();
   const q = (s) => JSON.stringify(String(s));
   const names = links.map((l, i) => `${l.label}${links.filter((x) => x.label === l.label).length > 1 ? `-${i + 1}` : ''}`);
-  const lines = [...K.cHead];
+  const lines = [...k.cHead];
   links.forEach((l, i) => {
-    const cred = l.protocol === K.protoB ? `password: ${q(user.password)}` : `uuid: ${q(user.uuid)}`;
-    const sni = l.protocol === K.protoB ? 'sni' : 'servername';
-    lines.push(`  - { name: ${q(names[i])}, type: ${l.protocol}, server: ${q(l.conn.host)}, port: 443, ${cred}, udp: true, tls: true, ${sni}: ${q(l.conn.sni)}, alpn: [http/1.1], ${K.clientFp}: chrome, network: ws, ${K.wsOpts}: { path: ${q(l.conn.path)}, headers: { Host: ${q(l.conn.sni)} }, ${K.maxEarlyData.replace(/_/g, '-')}: 2048, ${K.earlyHeaderName.replace(/_/g, '-')}: ${K.swpHeader} } }`);
+    const cred = l.protocol === k.protoB ? `password: ${q(user.password)}` : `uuid: ${q(user.uuid)}`;
+    const sni = l.protocol === k.protoB ? 'sni' : 'servername';
+    lines.push(`  - { name: ${q(names[i])}, type: ${l.protocol}, server: ${q(l.conn.host)}, port: 443, ${cred}, udp: true, tls: true, ${sni}: ${q(l.conn.sni)}, alpn: [http/1.1], ${k.clientFp}: chrome, network: ws, ${k.wsOpts}: { path: ${q(l.conn.path)}, headers: { Host: ${q(l.conn.sni)} }, ${k.maxEarlyData.replace(/_/g, '-')}: 2048, ${k.earlyHeaderName.replace(/_/g, '-')}: ${k.swpHeader} } }`);
   });
   if (!links.length) lines.push('  []');
-  lines.push(K.cGroups);
+  lines.push(k.cGroups);
   lines.push(`  - { name: "BBG", type: select, proxies: [${['"AUTO"', ...names.map(q), '"DIRECT"'].join(', ')}] }`);
-  lines.push(`  - { name: "AUTO", type: url-test, proxies: [${names.map(q).join(', ') || '"DIRECT"'}], url: "${K.gen204}", interval: 180, tolerance: 50 }`);
-  lines.push(...K.cRules);
+  lines.push(`  - { name: "AUTO", type: url-test, proxies: [${names.map(q).join(', ') || '"DIRECT"'}], url: "${k.gen204}", interval: 180, tolerance: 50 }`);
+  lines.push(...k.cRules);
   return lines.join('\n');
 }
 
 function subscription(doc, user, usage, host, format) {
+  const k = getK();
   const links = linksFor(doc, user, host);
   const head = subHeaders(doc, user, usage);
   switch (format) {
     case 'links': return new Response(links.map((l) => l.uri).join('\n') + '\n', { headers: { ...head, 'content-type': 'text/plain; charset=utf-8' } });
-    case K.fmtA: return new Response(JSON.stringify(formatProfileA(doc, user, links), null, 2), { headers: { ...head, 'content-type': 'application/json; charset=utf-8' } });
-    case K.fmtB: return new Response(JSON.stringify(formatProfileB(doc, user, links), null, 2), { headers: { ...head, 'content-type': 'application/json; charset=utf-8' } });
-    case K.fmtC: return new Response(formatProfileC(doc, user, links), { headers: { ...head, 'content-type': 'text/yaml; charset=utf-8' } });
+    case k.fmtA: return new Response(JSON.stringify(formatProfileA(doc, user, links), null, 2), { headers: { ...head, 'content-type': 'application/json; charset=utf-8' } });
+    case k.fmtB: return new Response(JSON.stringify(formatProfileB(doc, user, links), null, 2), { headers: { ...head, 'content-type': 'application/json; charset=utf-8' } });
+    case k.fmtC: return new Response(formatProfileC(doc, user, links), { headers: { ...head, 'content-type': 'text/yaml; charset=utf-8' } });
     default: return new Response(b64(enc.encode(links.map((l) => l.uri).join('\n'))), { headers: { ...head, 'content-type': 'text/plain; charset=utf-8' } });
   }
 }
@@ -1031,6 +1062,7 @@ function subscription(doc, user, usage, host, format) {
 /* ── state for the admin UI ─────────────────────────────────────────── */
 
 function buildState(snap, host) {
+  const k = getK();
   const { doc, usage, traffic } = snap;
   const s = doc.settings;
   const origin = `https://${s.publicHost || host}`;
@@ -1056,21 +1088,21 @@ function buildState(snap, host) {
     };
   });
   const warnings = [];
-  if (!s[K.relayKey]) warnings.push({ level: 'warn', fa: K.warnProxyFa, en: K.warnProxyEn });
-  if (!s.publicHost && /\.workers\.dev$/i.test(host)) warnings.push({ level: 'info', fa: K.warnWorkersFa, en: K.warnWorkersEn });
+  if (!s[k.relayKey]) warnings.push({ level: 'warn', fa: k.warnProxyFa, en: k.warnProxyEn });
+  if (!s.publicHost && /\.workers\.dev$/i.test(host)) warnings.push({ level: 'info', fa: k.warnWorkersFa, en: k.warnWorkersEn });
   if (!doc.users.length) warnings.push({ level: 'info', fa: 'هنوز مشترکی ساخته نشده است.', en: 'No subscribers yet.' });
   return {
     app: { ...BRAND, version: VERSION, now: Date.now() },
     edition: 'worker',
     features: { telegram: false, cores: false, scanner: false, easy: false, raw: false, update: false, logs: false, probe: false, ping: false },
     facts: { publicHost: s.publicHost || host, panelUrl: `${origin}${s.adminPath}/`, host, isCloudflare: true, subBase: `${origin}/${s.subPath}` },
-    settings: { theme: s.theme, lang: s.lang, publicHost: s.publicHost, [K.cleanIps]: s[K.cleanIps], [K.relayKey]: s[K.relayKey], [K.fragment]: s[K.fragment] !== false },
+    settings: { theme: s.theme, lang: s.lang, publicHost: s.publicHost, [k.cleanIps]: s[k.cleanIps], [k.relayKey]: s[k.relayKey], [k.fragment]: s[k.fragment] !== false },
     inbounds: doc.inbounds.map((ib) => {
-      const meta = INBOUND_META[ib.id];
+      const meta = k.inboundMeta[ib.id];
       return {
         id: ib.id, presetId: ib.id, label: meta.title.en, enabled: ib.enabled, core: 'worker', protocol: meta.protocol,
         transport: 'ws', security: 'tls-edge', edge: 'http', udp: false, port: 443,
-        params: { path: ib.id === K.ibA ? s[K.pathKeyA] : s[K.pathKeyB] }, title: meta.title, desc: meta.desc, fields: [], reachable: true, reason: null,
+        params: { path: ib.id === k.ibA ? s[k.pathKeyA] : s[k.pathKeyB] }, title: meta.title, desc: meta.desc, fields: [], reachable: true, reason: null,
       };
     }),
     presets: [],
@@ -1096,15 +1128,17 @@ const json = (data, status = 200, headers = {}) =>
 const NOT_FOUND_HTML = '<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n';
 const notFound = () => new Response(NOT_FOUND_HTML, { status: 404, headers: { 'content-type': 'text/html', server: 'nginx' } });
 
-function serveAsset(rel, base, extra = {}) {
-  const key = rel === '' || rel === '/' ? '/index.html' : rel;
+function serveFromBundle(key, base, extra = {}) {
   const a = ASSETS[key] || ASSETS[maskText(key)];
   if (!a) return null;
-  if (a.text === undefined && a.x !== undefined) {
+  if (a.text === undefined && a.raw !== undefined) {
+    a.text = a.raw.replaceAll('\u0001', '');
+    delete a.raw;
+  } else if (a.text === undefined && a.x !== undefined) {
     a.text = unmaskText(a.x);
     delete a.x;
   }
-  let body = a.text !== undefined ? a.text : (a.bytes || (a.bytes = fromB64(a.b64)));
+  let body = a.text !== undefined ? a.text : (a.bytes || (a.bytes = fromB64(a.b64.replaceAll('\u0001', ''))));
   if (key === '/index.html' || key === '/portal.html') {
     body = body.replace('<meta name="panel-base" content="">', `<meta name="panel-base" content="${base}">`);
     for (const [k, v] of Object.entries(extra)) body = body.replace(`<meta name="${k}" content="">`, `<meta name="${k}" content="${v}">`);
@@ -1119,6 +1153,17 @@ function serveAsset(rel, base, extra = {}) {
       ...(html ? { 'content-security-policy': `default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src ${scriptSrc}; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` } : {}),
     },
   });
+}
+
+async function serveAsset(rel, base, extra = {}, request = null, env = null) {
+  const key = rel === '' || rel === '/' ? '/index.html' : rel;
+  if (env?.ASSETS?.fetch && request && key.startsWith('/fonts/')) {
+    try {
+      const r = await env.ASSETS.fetch(new Request(new URL(key, request.url)));
+      if (r && r.ok) return r;
+    } catch { /* fall back to bundle */ }
+  }
+  return serveFromBundle(key, base, extra);
 }
 
 const COOKIE = '__Host-bbg';
@@ -1225,6 +1270,7 @@ async function api(request, env, url, rel, host) {
   if (route === 'POST /api/apply') return respond();
 
   if (route === 'POST /api/settings') {
+    const k = getK();
     const body = await readJson(request);
     const r = await mutate(env, (d) => {
       const s = d.settings;
@@ -1235,17 +1281,17 @@ async function api(request, env, url, rel, host) {
         if (h && !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(h)) return { error: 'invalid domain' };
         s.publicHost = h;
       }
-      if (body[K.cleanIps] !== undefined) {
-        const list = String(body[K.cleanIps]).split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
-        if (list.some((x) => !/^[0-9a-fA-F:.\-a-z]+$/.test(x))) return { error: K.errCleanIp };
-        s[K.cleanIps] = list.slice(0, 5).join(',');
+      if (body[k.cleanIps] !== undefined) {
+        const list = String(body[k.cleanIps]).split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+        if (list.some((x) => !/^[0-9a-fA-F:.\-a-z]+$/.test(x))) return { error: k.errCleanIp };
+        s[k.cleanIps] = list.slice(0, 5).join(',');
       }
-      if (body[K.relayKey] !== undefined) {
-        const v = String(body[K.relayKey]).trim();
-        if (v && !splitHostPort(v, 443)) return { error: K.errRelay };
-        s[K.relayKey] = v;
+      if (body[k.relayKey] !== undefined) {
+        const v = String(body[k.relayKey]).trim();
+        if (v && !splitHostPort(v, 443)) return { error: k.errRelay };
+        s[k.relayKey] = v;
       }
-      if (body[K.fragment] !== undefined) s[K.fragment] = Boolean(body[K.fragment]);
+      if (body[k.fragment] !== undefined) s[k.fragment] = Boolean(body[k.fragment]);
     });
     if (r.error) return json({ error: r.error }, r.status || 400);
     return respond();
@@ -1382,7 +1428,7 @@ async function handle(request, env, ctx) {
   const isWs = (request.headers.get('upgrade') || '').toLowerCase() === 'websocket';
   if (!isWs && ['/', '/favicon.ico', '/robots.txt'].includes(url.pathname)) return notFound();
   if (!isWs && (url.pathname.startsWith('/fonts/') || url.pathname.startsWith('/assets/'))) {
-    return serveAsset(url.pathname, '') || notFound();
+    return (await serveAsset(url.pathname, '', {}, request, env)) || notFound();
   }
   let cache;
   try {
@@ -1390,12 +1436,13 @@ async function handle(request, env, ctx) {
   } catch (err) {
     return failure(request, env, err, 503);
   }
+  const k = getK();
   const { paths } = cache.data;
   const path = url.pathname;
 
   if (isWs) {
-    if (paths[K.protoA] && path === paths[K.protoA]) return openChannel(request, env, ctx, K.protoA, cache);
-    if (paths[K.protoB] && path === paths[K.protoB]) return openChannel(request, env, ctx, K.protoB, cache);
+    if (paths[k.protoA] && path === paths[k.protoA]) return openChannel(request, env, ctx, k.protoA, cache);
+    if (paths[k.protoB] && path === paths[k.protoB]) return openChannel(request, env, ctx, k.protoB, cache);
     return notFound();
   }
 
@@ -1410,7 +1457,7 @@ async function handle(request, env, ctx) {
       }
     }
     if (rel === '/portal.html') return notFound();
-    return serveAsset(rel === '/' ? '/index.html' : rel, paths.admin) || notFound();
+    return (await serveAsset(rel === '/' ? '/index.html' : rel, paths.admin, {}, request, env)) || notFound();
   }
 
   if (path.startsWith(`/${paths.sub}/`)) {
@@ -1419,7 +1466,7 @@ async function handle(request, env, ctx) {
     const user = snap.doc.users.find((u) => safeEqual(u.subToken, token || ''));
     if (!user) return notFound();
     const usage = snap.usage[user.id] || { up: 0, down: 0 };
-    if (view === 'page') return serveAsset('/portal.html', '', { 'portal-data': `/${paths.sub}/${token}/info` }) || notFound();
+    if (view === 'page') return (await serveAsset('/portal.html', '', { 'portal-data': `/${paths.sub}/${token}/info` }, request, env)) || notFound();
     if (view === 'info') {
       const st = userStatus(user, usage);
       const links = st === 'active' ? linksFor(snap.doc, user, host) : [];
@@ -1430,12 +1477,12 @@ async function handle(request, env, ctx) {
       });
     }
     const format = String(view || url.searchParams.get('format') || 'base64').toLowerCase();
-    if (!['base64', 'links', K.fmtA, K.fmtB, K.fmtC].includes(format)) return notFound();
+    if (!['base64', 'links', k.fmtA, k.fmtB, k.fmtC].includes(format)) return notFound();
     return subscription(snap.doc, user, usage, host, format);
   }
 
   if (path.startsWith('/fonts/') || path.startsWith('/assets/')) {
-    return serveAsset(path, paths.admin) || notFound();
+    return (await serveAsset(path, paths.admin, {}, request, env)) || notFound();
   }
   return notFound();
 }

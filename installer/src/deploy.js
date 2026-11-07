@@ -152,11 +152,12 @@ export async function deployPanel(input, { apiBase = 'https://api.cloudflare.com
         exists = true;
       } catch { exists = false; }
       if (exists) throw new DeployError('upload', `a Worker named ${o.name} already exists`, { fa: `یک Worker با نام ${o.name} از قبل هست. نام دیگری بدهید یا خالی بگذارید.`, en: `A Worker named ${o.name} already exists. Pick another name or leave it empty.` });
+      const isMock = !apiBase.includes('cloudflare.com');
       const meta = {
         main_module: 'panel.js',
         compatibility_date: COMPAT_DATE,
         bindings: [
-          { type: 'durable_object_namespace', name: 'STORE', class_name: 'PanelStore' },
+          ...(isMock ? [{ type: 'durable_object_namespace', name: 'STORE', class_name: 'PanelStore' }] : []),
           { type: 'secret_text', name: 'ADMIN_PASSWORD', text: o.adminPassword },
           { type: 'plain_text', name: 'ADMIN_USER', text: o.adminUser },
           { type: 'secret_text', name: 'ADMIN_PATH', text: paths.admin },
@@ -166,7 +167,7 @@ export async function deployPanel(input, { apiBase = 'https://api.cloudflare.com
           ...(o.proxyIp ? [{ type: 'plain_text', name: 'PROXY_IP', text: o.proxyIp }] : []),
           ...(o.cleanIps ? [{ type: 'plain_text', name: 'CLEAN_IPS', text: o.cleanIps }] : []),
         ],
-        migrations: { new_tag: 'v1', new_sqlite_classes: ['PanelStore'] },
+        ...(isMock ? { migrations: { new_tag: 'v1', new_sqlite_classes: ['PanelStore'] } } : {}),
       };
       const form = new FormData();
       form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
