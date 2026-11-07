@@ -155,7 +155,6 @@ export async function deployPanel(input, { apiBase = 'https://api.cloudflare.com
       const meta = {
         main_module: 'panel.js',
         compatibility_date: COMPAT_DATE,
-        compatibility_flags: ['nodejs_compat'],
         bindings: [
           { type: 'durable_object_namespace', name: 'STORE', class_name: 'PanelStore' },
           { type: 'secret_text', name: 'ADMIN_PASSWORD', text: o.adminPassword },
