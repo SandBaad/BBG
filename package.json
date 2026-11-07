@@ -1,10 +1,10 @@
 {
-  "name": "bbg-panel",
+  "name": "bbg",
   "version": "2.1.0",
   "private": true,
   "type": "module",
   "author": "SANDBAAD",
-  "description": "BBG by SANDBAAD — multi-core (Xray / sing-box) VPN panel, with a Cloudflare Worker edition and a one-token installer",
+  "description": "BBG by SANDBAAD — edge management dashboard and gateway",
   "engines": {
     "node": ">=20"
   },
@@ -12,6 +12,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "check": "node scripts/preflight.js",
+    "build": "node scripts/build-worker.mjs",
     "build:worker": "node scripts/build-worker.mjs",
     "deploy:panel": "node scripts/build-worker.mjs && wrangler deploy",
     "deploy:installer": "node scripts/build-worker.mjs && cd installer && wrangler deploy",

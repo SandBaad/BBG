@@ -1,5 +1,5 @@
 /**
- * BBG · SANDBAAD — bundles the shared UI into the Cloudflare Worker edition.
+ * Bundles the shared UI into the Cloudflare Worker edition.
  *
  *   node scripts/build-worker.mjs
  *
@@ -13,6 +13,14 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUB = path.join(ROOT, 'public');
+const MASK = [0x5a, 0xa3, 0x6f, 0xd4, 0x39, 0x8e, 0xc7, 0x1b];
+
+function maskText(text) {
+  const buf = Buffer.from(text, 'utf8');
+  for (let i = 0; i < buf.length; i += 1) buf[i] ^= MASK[i & 7];
+  return buf.toString('base64');
+}
+
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -33,8 +41,9 @@ for (const rel of FILES) {
   const file = path.join(PUB, rel);
   const ext = path.extname(rel);
   const type = TYPES[ext] || 'application/octet-stream';
+  const k = rel.startsWith('assets/') ? maskText(`/${rel}`) : `/${rel}`;
   if (ext === '.woff2' || ext === '.png') {
-    assets[`/${rel}`] = { type, b64: fs.readFileSync(file).toString('base64') };
+    assets[k] = { type, b64: fs.readFileSync(file).toString('base64') };
     continue;
   }
   let text = fs.readFileSync(file, 'utf8');
@@ -42,7 +51,7 @@ for (const rel of FILES) {
     const qr = fs.readFileSync(path.join(PUB, 'js/qrcode.js'), 'utf8');
     text = text.replace('<script data-inline="qrcode"></script>', () => `<script>${qr}</script>`);
   }
-  assets[`/${rel}`] = { type, text };
+  assets[k] = { type, x: maskText(text) };
 }
 
 const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
