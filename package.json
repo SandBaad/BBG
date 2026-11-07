@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "author": "SANDBAAD",
-  "description": "BBG by SANDBAAD \u2014 multi-core (Xray / sing-box) VPN panel, with a Cloudflare Worker edition and a one-token installer",
+  "description": "BBG by SANDBAAD — multi-core (Xray / sing-box) VPN panel, with a Cloudflare Worker edition and a one-token installer",
   "engines": {
     "node": ">=20"
   },
@@ -17,5 +17,18 @@
     "deploy:installer": "node scripts/build-worker.mjs && cd installer && wrangler deploy",
     "test": "node --import ./tests/cf-shim/register.mjs --import ./tests/cf-shim/runtime.mjs tests/worker.test.mjs && node --import ./tests/cf-shim/register.mjs --import ./tests/cf-shim/runtime.mjs tests/installer.test.mjs"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "cloudflare": {
+    "bindings": {
+      "ADMIN_PASSWORD": {
+        "description": "Panel password, **10 characters or more**. You sign in as `admin` with it. رمز پنل، حداقل ۱۰ حرف."
+      },
+      "ADMIN_PATH": {
+        "description": "Last part of the panel address: `https://<worker>.workers.dev/<ADMIN_PATH>/`. Letters, digits, `-` and `_`. Pick something hard to guess. بخش آخر آدرس پنل."
+      },
+      "ADMIN_USER": {
+        "description": "Admin username (default `admin`). نام کاربری مدیر."
+      }
+    }
+  }
 }

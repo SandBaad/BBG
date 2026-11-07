@@ -1,0 +1,83 @@
+# Deploys the one-token installer (web page + optional Telegram bot) to your
+# Cloudflare account on every push to main, after the tests pass.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN     token with "Edit Cloudflare Workers" permissions
+#   CLOUDFLARE_ACCOUNT_ID    your account ID (dashboard → Workers & Pages → right column)
+#   TELEGRAM_BOT_TOKEN       optional, from @BotFather
+#   TELEGRAM_WEBHOOK_SECRET  optional, any long random string (letters, digits, - and _)
+name: Deploy installer
+
+on:
+  push:
+    branches: [main]
+    paths: ['installer/**', 'worker/**', 'public/**', 'scripts/build-worker.mjs', 'tests/**', '.github/workflows/deploy-installer.yml']
+  workflow_dispatch:
+
+concurrency: deploy-installer
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      # Copies of this repo (e.g. made by the Deploy to Cloudflare button) have no secrets: test only.
+      HAS_CF: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Build panel bundle
+        run: node scripts/build-worker.mjs
+
+      - name: Test panel and installer
+        run: npm test
+
+      - name: Skip deploy (no Cloudflare secrets)
+        if: env.HAS_CF != 'true'
+        run: echo "::notice::Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID in Settings → Secrets and variables → Actions to deploy the installer."
+
+      - name: Deploy installer
+        if: env.HAS_CF == 'true'
+        working-directory: installer
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4 deploy
+
+      - name: Show the installer link
+        if: env.HAS_CF == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          SUB=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | jq -r '.result.subdomain')
+          URL="https://bbg-installer.$SUB.workers.dev"
+          echo "::notice title=Installer is live::$URL"
+          echo "### Installer is live: $URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Connect Telegram bot (skipped without TELEGRAM_BOT_TOKEN)
+        if: env.HAS_CF == 'true'
+        working-directory: installer
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_WEBHOOK_SECRET" ]; then
+            echo "No bot secrets; the web installer is deployed without the Telegram bot."
+            exit 0
+          fi
+          printf '%s' "$TELEGRAM_BOT_TOKEN" | npx --yes wrangler@4 secret put TELEGRAM_BOT_TOKEN
+          printf '%s' "$TELEGRAM_WEBHOOK_SECRET" | npx --yes wrangler@4 secret put TELEGRAM_WEBHOOK_SECRET
+          SUB=$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | jq -r '.result.subdomain')
+          URL="https://bbg-installer.$SUB.workers.dev"
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "$URL/tg/setup?key=$TELEGRAM_WEBHOOK_SECRET"; then echo; echo "Bot connected: $URL"; exit 0; fi
+            sleep 5
+          done
+          echo "Could not register the webhook; open $URL/tg/setup?key=<secret> by hand." && exit 1

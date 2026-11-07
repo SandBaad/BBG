@@ -1,0 +1,7 @@
+node_modules/
+bin/
+data/
+.cache-bin/
+*.log
+.dev.vars
+.wrangler/

@@ -1,11 +1,12 @@
-# BBG · SANDBAAD — Cloudflare Worker edition (manual deploy).
-# The installer (installer/) does all of this for you from a single API token.
+# BBG · SANDBAAD — Cloudflare Worker edition of the panel.
 #
-#   npm run build:worker
-#   npx wrangler secret put ADMIN_PASSWORD     # 10+ characters
-#   npx wrangler deploy
-#
-# Then open the admin link printed by:  npx wrangler tail   (or read it in the panel's first event)
+# One click: the "Deploy to Cloudflare" button in README.md (it asks for both secrets).
+# By hand:   npx wrangler secret put ADMIN_PASSWORD     # 10+ characters
+#            npx wrangler secret put ADMIN_PATH         # optional, default "panel"
+#            npx wrangler deploy
+# Panel:     https://<worker-name>.<your-subdomain>.workers.dev/<ADMIN_PATH>/   (user: admin)
+# ADMIN_PASSWORD and ADMIN_PATH are secrets so rebuilds never reset them; change them in the
+# dashboard (Worker → Settings → Variables and Secrets) to reset the password or move the panel.
 name = "bbg-panel"
 main = "worker/panel.js"
 compatibility_date = "2025-09-01"
@@ -22,4 +23,3 @@ new_sqlite_classes = ["PanelStore"]
 
 [vars]
 ADMIN_USER = "admin"
-# Optional: fixed admin path (default: random). Example: ADMIN_PATH = "my-panel-path"

@@ -57,8 +57,8 @@ await test('unknown paths look like a plain nginx 404', async () => {
   assert.equal(ws.status, 404);
 });
 
-await test('admin path is random and serves the UI with its base path', async () => {
-  assert.match(ADMIN, /^\/[a-z0-9]{12}$/);
+await test('admin path defaults to /panel and serves the UI with its base path', async () => {
+  assert.equal(ADMIN, '/panel');
   const r = await call(`${ADMIN}/`);
   assert.equal(r.status, 200);
   const html = await r.text();
@@ -267,5 +267,66 @@ await test('password change signs out old sessions', async () => {
 });
 
 echo.close();
+await test('no ADMIN_PASSWORD: no open setup; adding the secret later creates the admin', async () => {
+  const m2 = await import('../worker/panel.js?first-run');
+  const env2 = { ADMIN_PATH: '/my-panel/' };
+  env2.STORE = doNamespace(m2.PanelStore, env2);
+  const f = (p, init = {}) => m2.default.fetch(new Request(HOST + p, init), env2, ctx);
+  const H = { 'x-requested-with': 'bbg', 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.20' };
+  assert.equal((await f('/my-panel/')).status, 200);
+  const boot = await (await f('/my-panel/api/bootstrap')).json();
+  assert.equal(boot.needsSetup, false);
+  assert.equal(boot.setupBlocked, true);
+  const claim = await f('/my-panel/api/setup', { method: 'POST', headers: H, body: JSON.stringify({ username: 'someone', password: 'someone-else-123' }) });
+  assert.equal(claim.status, 403);
+  env2.ADMIN_PASSWORD = 'short';
+  assert.equal((await (await f('/my-panel/api/bootstrap')).json()).setupBlocked, true);
+  env2.ADMIN_PASSWORD = 'Later-Password-42';
+  assert.equal((await (await f('/my-panel/api/bootstrap')).json()).setupBlocked, false);
+  const login = await f('/my-panel/api/login', { method: 'POST', headers: H, body: JSON.stringify({ username: 'admin', password: 'Later-Password-42' }) });
+  assert.equal(login.status, 200);
+});
+
+await test('a bad ADMIN_PATH falls back to /panel', async () => {
+  const m3 = await import('../worker/panel.js?bad-path');
+  const env3 = { ADMIN_PATH: 'my panel/../x', ADMIN_PASSWORD: 'Some-Password-42' };
+  env3.STORE = doNamespace(m3.PanelStore, env3);
+  await m3.default.fetch(new Request(`${HOST}/`), env3, ctx);
+  assert.equal(env3.STORE._inst.doc.settings.adminPath, '/panel');
+});
+
+await test('changing ADMIN_PASSWORD in Cloudflare resets a forgotten password; panel changes survive', async () => {
+  const m5 = await import('../worker/panel.js?pw-reset');
+  const env5 = { ADMIN_PATH: 'p5', ADMIN_PASSWORD: 'First-Password-1' };
+  env5.STORE = doNamespace(m5.PanelStore, env5);
+  const H = { 'x-requested-with': 'bbg', 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.30' };
+  let ck = '';
+  const f = async (p, body) => {
+    const r = await m5.default.fetch(new Request(`${HOST}/p5${p}`, { method: body ? 'POST' : 'GET', headers: { ...H, cookie: ck }, body: body ? JSON.stringify(body) : undefined }), env5, ctx);
+    const set = r.headers.get('set-cookie'); if (set) ck = set.split(';')[0];
+    return r.status;
+  };
+  assert.equal(await f('/api/login', { username: 'admin', password: 'First-Password-1' }), 200);
+  assert.equal(await f('/api/admin/password', { current: 'First-Password-1', password: 'Changed-In-Panel-2' }), 200);
+  assert.equal(await f('/api/state'), 200, 'same secret: panel password kept, session alive');
+  assert.equal(await f('/api/login', { username: 'admin', password: 'Changed-In-Panel-2' }), 200);
+  env5.ADMIN_PASSWORD = 'Reset-From-Cloudflare-3';
+  assert.equal(await f('/api/state'), 401, 'reset signs out old sessions');
+  assert.equal(await f('/api/login', { username: 'admin', password: 'Changed-In-Panel-2' }), 401);
+  assert.equal(await f('/api/login', { username: 'admin', password: 'Reset-From-Cloudflare-3' }), 200);
+});
+
+await test('changing ADMIN_PATH later moves the panel', async () => {
+  const m4 = await import('../worker/panel.js?path-change');
+  const env4 = { ADMIN_PATH: 'first-path', ADMIN_PASSWORD: 'Some-Password-42' };
+  env4.STORE = doNamespace(m4.PanelStore, env4);
+  const f = (p) => m4.default.fetch(new Request(HOST + p), env4, ctx);
+  assert.equal((await f('/first-path/')).status, 200);
+  env4.ADMIN_PATH = 'second-path';
+  await sleep(16_000); // past the 15 s isolate cache
+  assert.equal((await f('/second-path/')).status, 200);
+  assert.equal((await f('/first-path/')).status, 404);
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ', some failed' : ''}`);
 process.exit(process.exitCode || 0);

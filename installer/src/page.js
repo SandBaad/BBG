@@ -57,6 +57,7 @@ ol.progress .note { display: block; font-size: 12px; color: var(--muted); direct
 .notice.bad { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); background: color-mix(in srgb, var(--bad) 10%, transparent); }
 .notice.ok { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); background: color-mix(in srgb, var(--ok) 10%, transparent); }
 footer { text-align: center; color: var(--muted); font-size: 12px; }
+footer a { color: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
 </style>
@@ -118,7 +119,7 @@ Account · Account Settings · Read
     <div class="row"><a class="btn" id="bot-link" dir="ltr" target="_blank" rel="noopener noreferrer"></a></div>
   </section>
 
-  <footer>BBG · SANDBAAD · panel v__VERSION__ · <span data-t="foot"></span></footer>
+  <footer>BBG · SANDBAAD · panel v__VERSION__ · <a href="https://github.com/SandBaad/BBG" target="_blank" rel="noopener" data-t="foot"></a></footer>
 </div>
 <script type="application/json" id="steps-data">__STEPS__</script>
 <script>

@@ -1,0 +1,5 @@
+# Asked for by the "Deploy to Cloudflare" button (and used by `wrangler dev` as .dev.vars).
+# Panel password, 10 characters or more. You sign in as "admin" with it.
+ADMIN_PASSWORD=
+# End of the panel address: https://<worker>.workers.dev/<ADMIN_PATH>/ — letters, digits, - and _.
+ADMIN_PATH=

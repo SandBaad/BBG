@@ -181,8 +181,8 @@ async function freshDoc(env) {
       cleanIps: String(env.CLEAN_IPS || '').trim(),
       proxyIp: String(env.PROXY_IP || '').trim(),
       fragment: true,
-      adminPath: `/${String(env.ADMIN_PATH || randId(12)).replace(/^\/+/, '')}`,
-      subPath: String(env.SUB_PATH || randId(8)).replace(/^\/+|\/+$/g, ''),
+      adminPath: `/${cleanPath(env.ADMIN_PATH, 'panel')}`,
+      subPath: cleanPath(env.SUB_PATH, randId(8)),
       vlessPath: `/${randId(14)}`,
       trojanPath: `/${randId(14)}`,
     },
@@ -196,12 +196,22 @@ async function freshDoc(env) {
     }],
     events: [{ t: Date.now(), kind: 'install', message: `panel installed (v${VERSION})` }],
   };
-  if (env.ADMIN_PASSWORD) {
+  if (envPasswordOk(env)) {
     const h = await hashPassword(String(env.ADMIN_PASSWORD), secret);
-    doc.admin = { username: String(env.ADMIN_USER || 'admin'), ...h, ver: 1 };
+    doc.admin = { username: envAdminUser(env), ...h, ver: 1, envFp: await envFingerprint(env, secret) };
   }
   return doc;
 }
+
+/** Path segment from a variable: letters, digits, - and _ only; reserved names fall back. */
+function cleanPath(value, fallback) {
+  const s = String(value || '').trim().replace(/^\/+|\/+$/g, '');
+  return /^[A-Za-z0-9_-]{1,64}$/.test(s) && !['fonts', 'assets'].includes(s.toLowerCase()) ? s : fallback;
+}
+const envPasswordOk = (env) => String(env.ADMIN_PASSWORD || '').length >= 10;
+const envAdminPath = (env) => { const p = cleanPath(env.ADMIN_PATH, ''); return p ? `/${p}` : ''; };
+const envFingerprint = (env, secret) => hmac(secret, `admin-env:${env.ADMIN_PASSWORD}`);
+const envAdminUser = (env) => (String(env.ADMIN_USER || '').trim().length >= 3 ? String(env.ADMIN_USER).trim().slice(0, 64) : 'admin');
 
 function userStatus(u, usage, now = Date.now()) {
   if (!u.enabled) return 'disabled';
@@ -336,7 +346,13 @@ const storeOf = (env) => env.STORE.get(env.STORE.idFromName('main'));
 
 async function activeSet(env, force = false) {
   if (!force && ACTIVE.data && Date.now() - ACTIVE.at < ACTIVE_TTL_MS) return ACTIVE;
-  const data = await storeOf(env).active();
+  let data = await storeOf(env).active();
+  const want = envAdminPath(env);
+  if (want && data.paths.admin !== want) {
+    // ADMIN_PATH changed in the Cloudflare dashboard: the variable wins.
+    await mutate(env, (d) => { d.settings.adminPath = want; event(d, 'settings', 'admin path updated from ADMIN_PATH'); return null; });
+    data = await storeOf(env).active();
+  }
   ACTIVE = {
     at: Date.now(),
     data,
@@ -893,7 +909,23 @@ const event = (doc, kind, message) => doc.events.push({ t: Date.now(), kind, mes
 
 async function api(request, env, url, rel, host) {
   const store = storeOf(env);
-  const snap = await store.snapshot();
+  let snap = await store.snapshot();
+  if (envPasswordOk(env)) {
+    // ADMIN_PASSWORD added or changed in the Cloudflare dashboard: create the admin, or reset its
+    // password (the "forgot password" path). A password changed inside the panel is left alone.
+    const fp = await envFingerprint(env, snap.doc.secrets.server);
+    if (snap.doc.admin?.envFp !== fp) {
+      await mutate(env, async (d) => {
+        const cur = d.admin;
+        if (cur && cur.envFp === fp) return null;
+        if (cur && !cur.envFp) { cur.envFp = fp; return null; }
+        d.admin = { username: envAdminUser(env), ...(await hashPassword(String(env.ADMIN_PASSWORD), d.secrets.server)), ver: (cur?.ver || 0) + 1, envFp: fp };
+        event(d, 'auth', cur ? 'admin password reset from ADMIN_PASSWORD' : 'admin account created from ADMIN_PASSWORD');
+        return null;
+      });
+      snap = await store.snapshot();
+    }
+  }
   const { doc } = snap;
   const method = request.method.toUpperCase();
   const route = `${method} ${rel}`;
@@ -907,22 +939,12 @@ async function api(request, env, url, rel, host) {
   const session = await readSession(request, doc);
 
   if (route === 'GET /api/bootstrap') {
-    return json({ app: { ...BRAND, version: VERSION }, edition: 'worker', needsSetup: !doc.admin, loggedIn: Boolean(session), username: session?.u || '', settings: { theme: doc.settings.theme, lang: doc.settings.lang } });
+    return json({ app: { ...BRAND, version: VERSION }, edition: 'worker', needsSetup: false, setupBlocked: !doc.admin, loggedIn: Boolean(session), username: session?.u || '', settings: { theme: doc.settings.theme, lang: doc.settings.lang } });
   }
   if (route === 'POST /api/setup') {
     if (doc.admin) return json({ error: 'already configured' }, 409);
-    const body = await readJson(request);
-    const username = String(body.username || '').trim();
-    const password = String(body.password || '');
-    if (username.length < 3 || password.length < 10) return json({ error: 'username ≥ 3 and password ≥ 10 characters' }, 400);
-    const r = await mutate(env, async (d) => {
-      if (d.admin) return { error: 'already configured', status: 409 };
-      d.admin = { username, ...(await hashPassword(password, d.secrets.server)), ver: 1 };
-      event(d, 'auth', 'admin account created');
-    });
-    if (r.error) return json({ error: r.error }, r.status || 400);
-    const fresh = (await store.snapshot()).doc;
-    return json({ ok: true }, 200, { 'set-cookie': await sessionCookie(fresh) });
+    // No open first-run setup on the Worker: whoever found the address first could claim the panel.
+    return json({ error: 'set the ADMIN_PASSWORD secret (10+ characters) in Cloudflare, then reload' }, 403);
   }
   if (route === 'POST /api/login') {
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
@@ -979,7 +1001,7 @@ async function api(request, env, url, rel, host) {
     if (next.length < 10) return json({ error: 'password must be at least 10 characters' }, 400);
     if (!(await checkPassword(String(body.current || ''), doc.admin, doc.secrets.server))) return json({ error: 'wrong current password' }, 403);
     const r = await mutate(env, async (d) => {
-      d.admin = { username: d.admin.username, ...(await hashPassword(next, d.secrets.server)), ver: (d.admin.ver || 1) + 1 };
+      d.admin = { username: d.admin.username, ...(await hashPassword(next, d.secrets.server)), ver: (d.admin.ver || 1) + 1, envFp: d.admin.envFp };
       event(d, 'auth', 'admin password changed');
     });
     if (r.error) return json({ error: r.error }, r.status || 400);
@@ -1067,7 +1089,7 @@ async function api(request, env, url, rel, host) {
     incoming.events = Array.isArray(incoming.events) ? incoming.events : [];
     await store.replaceAll(incoming, body.usage || {});
     ACTIVE.at = 0;
-    return json({ ok: true, relogin: true, panelUrl: `${url.origin}${incoming.settings.adminPath}/` });
+    return json({ ok: true, relogin: true, panelUrl: `${url.origin}${envAdminPath(env) || incoming.settings.adminPath}/` });
   }
 
   return json({ error: 'not found' }, 404);

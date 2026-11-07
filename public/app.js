@@ -963,11 +963,25 @@ function showAuth() {
   $('#auth-submit').textContent = setup ? L('ساخت حساب و ورود', 'Create & sign in') : L('ورود', 'Sign in');
   $('#auth-lang').textContent = S.lang === 'fa' ? 'EN' : 'FA';
   $('#auth-error').hidden = true;
+  // Worker edition without ADMIN_PASSWORD: no open setup, explain how to set it instead.
+  const blocked = Boolean(S.boot?.setupBlocked);
+  $('#auth-user').closest('.field').hidden = blocked;
+  $('#auth-pass').closest('.field').hidden = blocked;
+  if (blocked) {
+    $('#auth-title').textContent = L('رمز پنل هنوز تنظیم نشده', 'The panel password is not set yet');
+    $('#auth-hint').textContent = L(
+      'در داشبورد Cloudflare بخش Workers & Pages را باز کنید، همین Worker را انتخاب کنید و در Settings › Variables and Secrets یک Secret به نام ADMIN_PASSWORD (حداقل ۱۰ حرف) بسازید. بعد این صفحه را تازه کنید و با نام کاربری admin وارد شوید.',
+      'In the Cloudflare dashboard open Workers & Pages, pick this Worker and add a secret named ADMIN_PASSWORD (10+ characters) under Settings › Variables and Secrets. Then reload this page and sign in as admin.',
+    );
+    $('#auth-submit').textContent = L('تازه‌سازی صفحه', 'Reload page');
+    return;
+  }
   setTimeout(() => $('#auth-user').focus(), 30);
 }
 
 async function submitAuth(ev) {
   ev.preventDefault();
+  if (S.boot?.setupBlocked) { location.reload(); return; }
   const err = $('#auth-error');
   const username = $('#auth-user').value.trim();
   const password = $('#auth-pass').value;

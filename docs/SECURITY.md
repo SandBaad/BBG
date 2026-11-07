@@ -7,7 +7,7 @@
 | Admin login | Salted hash (scrypt on the server, PBKDF2 + server pepper on the Worker); 8 failed tries per IP per window, then HTTP 429 |
 | Sessions | HMAC-signed cookie, `HttpOnly`, `SameSite=Strict` (`Secure` on HTTPS); bound to a password version, so changing the password signs out every other session |
 | CSRF | Every non-GET API call needs the `x-requested-with: bbg` header and a same-origin `Origin` |
-| First run | Server: one-time setup key printed in the log, or `BBG_ADMIN_PASSWORD`. Worker: the installer sets the admin password |
+| First run | Server: one-time setup key printed in the log, or `BBG_ADMIN_PASSWORD`. Worker: no open setup at all; the password comes from the `ADMIN_PASSWORD` secret (set by the installer or the Deploy button), and changing that secret resets it |
 | Subscription links | Random 18-byte token per user, stored; "rotate keys" issues a new one and the old link returns 404 |
 | Backups | Contain keys and password hashes; restore refuses files without an admin and secrets |
 | Headers | CSP, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`; non-ASCII names are encoded (`base64:` titles, RFC 5987 file names) |
@@ -27,7 +27,7 @@
 
 - State lives in one SQLite-backed Durable Object (strongly consistent); no KV namespace.
 - VLESS UUIDs and Trojan passwords (SHA-224) are checked against active users; disabled, expired and out-of-data users are refused, and a quota cut-off takes effect on the next connection.
-- Admin panel, subscription and tunnel paths are random per install; everything else is a 404.
+- Subscription and tunnel paths are random per install. The admin path is random when the installer creates the panel, otherwise it is the `ADMIN_PATH` secret (default `/panel`). Everything else is a 404.
 - No third-party ProxyIP is configured by default.
 
 ## Not covered
