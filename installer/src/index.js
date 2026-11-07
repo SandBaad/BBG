@@ -48,7 +48,7 @@ function page(env) {
   });
 }
 
-async function webDeploy(request, env) {
+async function webDeploy(request, env, ctx) {
   const url = new URL(request.url);
   const origin = request.headers.get('origin');
   if (request.headers.get('x-requested-with') !== 'bbg-installer' || (origin && origin !== url.origin)) return json({ error: 'forbidden' }, 403);
@@ -62,7 +62,7 @@ async function webDeploy(request, env) {
   const writer = stream.writable.getWriter();
   const enc = new TextEncoder();
   const send = (obj) => writer.write(enc.encode(`${JSON.stringify(obj)}\n`)).catch(() => {});
-  (async () => {
+  const job = (async () => {
     try {
       const result = await deployPanel(body, { apiBase: env.CF_API_BASE || undefined, report: (step, status, extra) => send({ step, status, ...extra }) });
       await send({ done: true, result });
@@ -72,6 +72,7 @@ async function webDeploy(request, env) {
       writer.close().catch(() => {});
     }
   })();
+  try { ctx?.waitUntil?.(job); } catch { /* ignore */ }
   return new Response(stream.readable, { headers: { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', ...SEC } });
 }
 
@@ -183,18 +184,38 @@ async function registerWebhook(request, env) {
   return json({ ok: Boolean(r.ok), telegram: r.description || '' });
 }
 
+const FONT_CACHE = new Map();
+function decodeFont(pathname) {
+  let bin = FONT_CACHE.get(pathname);
+  if (bin) return bin;
+  const b64 = FONTS[pathname];
+  if (typeof Uint8Array.fromBase64 === 'function') {
+    try { bin = Uint8Array.fromBase64(b64); } catch { bin = null; }
+  }
+  if (!bin) {
+    const s = atob(b64);
+    bin = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i += 1) bin[i] = s.charCodeAt(i);
+  }
+  FONT_CACHE.set(pathname, bin);
+  return bin;
+}
+
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    if (request.method === 'GET' && url.pathname === '/') return page(env);
-    if (request.method === 'GET' && FONTS[url.pathname]) {
-      const bin = Uint8Array.from(atob(FONTS[url.pathname]), (c) => c.charCodeAt(0));
-      return new Response(bin, { headers: { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=604800', ...SEC } });
+    try {
+      const url = new URL(request.url);
+      if (request.method === 'GET' && url.pathname === '/') return page(env);
+      if (request.method === 'GET' && FONTS[url.pathname]) {
+        return new Response(decodeFont(url.pathname), { headers: { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=604800', ...SEC } });
+      }
+      if (request.method === 'POST' && url.pathname === '/api/deploy') return webDeploy(request, env, ctx);
+      if (request.method === 'GET' && url.pathname === '/tg/setup') return registerWebhook(request, env);
+      if (request.method === 'POST' && env.TELEGRAM_WEBHOOK_SECRET && url.pathname === `/tg/${env.TELEGRAM_WEBHOOK_SECRET}`) return telegramWebhook(request, env, ctx);
+      return new Response('Not found', { status: 404 });
+    } catch (err) {
+      return json({ error: err && err.message ? err.message : String(err) }, 500);
     }
-    if (request.method === 'POST' && url.pathname === '/api/deploy') return webDeploy(request, env);
-    if (request.method === 'GET' && url.pathname === '/tg/setup') return registerWebhook(request, env);
-    if (request.method === 'POST' && env.TELEGRAM_WEBHOOK_SECRET && url.pathname === `/tg/${env.TELEGRAM_WEBHOOK_SECRET}`) return telegramWebhook(request, env, ctx);
-    return new Response('Not found', { status: 404 });
   },
 };
 

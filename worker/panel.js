@@ -37,8 +37,14 @@ function b64(bytes) {
 }
 const b64url = (bytes) => b64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 function fromB64(text) {
-  const s = String(text || '').replace(/-/g, '+').replace(/_/g, '/');
-  const bin = atob(s + '='.repeat((4 - (s.length % 4)) % 4));
+  const raw = String(text || '');
+  const isUrl = raw.includes('-') || raw.includes('_');
+  if (!isUrl && typeof Uint8Array.fromBase64 === 'function') {
+    try { return Uint8Array.fromBase64(raw); } catch { /* fall back */ }
+  }
+  const s = isUrl ? raw.replace(/-/g, '+').replace(/_/g, '/') : raw;
+  const pad = (4 - (s.length % 4)) % 4;
+  const bin = atob(pad ? s + '='.repeat(pad) : s);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
   return out;
@@ -61,21 +67,24 @@ function safeEqual(a, b) {
 
 /* ── SHA-224 (Trojan password hash; WebCrypto has no SHA-224) ───────── */
 
-const SHA_K = (() => {
-  const k = new Uint32Array(64);
-  let n = 2;
-  let i = 0;
-  const prime = (v) => { for (let d = 2; d * d <= v; d += 1) if (v % d === 0) return false; return true; };
-  while (i < 64) {
-    if (prime(n)) k[i++] = Math.floor((Math.cbrt(n) % 1) * 2 ** 32) >>> 0;
-    n += 1;
-  }
-  return k;
-})();
+const SHA_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
 const SHA224_IV = [0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939, 0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4];
+const sha224Cache = new Map();
 
 export function sha224Hex(text) {
-  const bytes = enc.encode(String(text));
+  const key = String(text);
+  const cached = sha224Cache.get(key);
+  if (cached) return cached;
+  const bytes = enc.encode(key);
   const len = bytes.length;
   const total = ((len + 9 + 63) >> 6) << 6;
   const m = new Uint8Array(total);
@@ -105,7 +114,10 @@ export function sha224Hex(text) {
     }
     H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
   }
-  return Array.from(H.subarray(0, 7), (w) => w.toString(16).padStart(8, '0')).join('');
+  const out = Array.from(H.subarray(0, 7), (w) => w.toString(16).padStart(8, '0')).join('');
+  if (sha224Cache.size > 512) sha224Cache.clear();
+  sha224Cache.set(key, out);
+  return out;
 }
 
 /* ── HMAC & password hashing ────────────────────────────────────────── */
@@ -125,9 +137,9 @@ async function hmacKey(secret) {
 async function hmac(secret, data) {
   return b64url(new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(secret), enc.encode(data))));
 }
-// 10k iterations keeps a login under the free plan's CPU budget; the server
-// secret is mixed in as a pepper, so a stolen hash alone cannot be brute-forced.
-const PBKDF2_ITER = 10_000;
+// 4k iterations stays comfortably under the free plan's 10 ms CPU budget even on cold start;
+// the 256-bit server secret is mixed in as a pepper, so a stolen hash alone cannot be brute-forced.
+const PBKDF2_ITER = 4_000;
 async function hashPassword(password, pepper, salt = randToken(16), iter = PBKDF2_ITER) {
   const key = await crypto.subtle.importKey('raw', enc.encode(`${password}\u0000${pepper}`), 'PBKDF2', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(salt), iterations: iter }, key, 256);
@@ -215,7 +227,17 @@ function cleanPath(value, fallback) {
 }
 const envPasswordOk = (env) => String(env.ADMIN_PASSWORD || '').length >= 10;
 const envAdminPath = (env) => { const p = cleanPath(env.ADMIN_PATH, ''); return p ? `/${p}` : ''; };
-const envFingerprint = (env, secret) => hmac(secret, `admin-env:${env.ADMIN_PASSWORD}`);
+const fpCache = new Map();
+async function envFingerprint(env, secret) {
+  const k = `${secret}\u0000${env.ADMIN_PASSWORD}`;
+  let fp = fpCache.get(k);
+  if (!fp) {
+    fp = await hmac(secret, `admin-env:${env.ADMIN_PASSWORD}`);
+    if (fpCache.size > 16) fpCache.clear();
+    fpCache.set(k, fp);
+  }
+  return fp;
+}
 const envAdminUser = (env) => (String(env.ADMIN_USER || '').trim().length >= 3 ? String(env.ADMIN_USER).trim().slice(0, 64) : 'admin');
 
 function userStatus(u, usage, now = Date.now()) {
@@ -228,27 +250,41 @@ function userStatus(u, usage, now = Date.now()) {
 
 /* ── Durable Object: the single source of truth ─────────────────────── */
 
+const USAGE_FLUSH_MS = 15_000;
+
 export class PanelStore extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.doc = null;
     this.attempts = new Map();
+    this.lastFlush = 0;
+    this.dirtyUsage = false;
     // Nothing else runs until the state is loaded, so two first requests cannot both create it.
     ctx.blockConcurrencyWhile(() => this.load());
   }
 
   async load() {
     if (this.doc) return;
-    let doc = await this.ctx.storage.get('doc');
+    let [doc, usage, traffic] = await Promise.all([
+      this.ctx.storage.get('doc'),
+      this.ctx.storage.get('usage'),
+      this.ctx.storage.get('traffic'),
+    ]);
     if (!doc) {
       doc = await freshDoc(this.env);
       await this.ctx.storage.put('doc', doc);
     }
-    const usage = (await this.ctx.storage.get('usage')) || {};
-    const traffic = (await this.ctx.storage.get('traffic')) || [];
-    this.usage = usage;
-    this.traffic = traffic;
+    this.usage = usage || {};
+    this.traffic = traffic || [];
     this.doc = doc;
+  }
+
+  async alarm() {
+    await this.load();
+    if (!this.dirtyUsage) return;
+    this.dirtyUsage = false;
+    this.lastFlush = Date.now();
+    await this.ctx.storage.put({ usage: this.usage, traffic: this.traffic });
   }
 
   async snapshot() {
@@ -266,6 +302,8 @@ export class PanelStore extends DurableObject {
     const ids = new Set(doc.users.map((u) => u.id));
     for (const id of Object.keys(this.usage)) if (!ids.has(id)) delete this.usage[id];
     this.doc = doc;
+    this.dirtyUsage = false;
+    this.lastFlush = Date.now();
     await this.ctx.storage.put({ doc, usage: this.usage });
     return { ok: true, rev: doc.rev };
   }
@@ -273,6 +311,8 @@ export class PanelStore extends DurableObject {
   async resetUsage(id) {
     await this.load();
     delete this.usage[id];
+    this.dirtyUsage = false;
+    this.lastFlush = Date.now();
     await this.ctx.storage.put('usage', this.usage);
     return true;
   }
@@ -282,6 +322,8 @@ export class PanelStore extends DurableObject {
     doc.rev = this.doc.rev + 1;
     this.doc = doc;
     this.usage = usage || {};
+    this.dirtyUsage = false;
+    this.lastFlush = Date.now();
     await this.ctx.storage.put({ doc, usage: this.usage });
     return { ok: true };
   }
@@ -328,7 +370,14 @@ export class PanelStore extends DurableObject {
       bucket.down += Math.max(0, Number(down) || 0);
       if (userStatus(u, rec, now) !== 'active') blocked.push(id);
     }
-    await this.ctx.storage.put({ usage: this.usage, traffic: this.traffic });
+    if (!this.lastFlush || blocked.length > 0 || now - this.lastFlush >= USAGE_FLUSH_MS) {
+      this.dirtyUsage = false;
+      this.lastFlush = now;
+      await this.ctx.storage.put({ usage: this.usage, traffic: this.traffic });
+    } else {
+      this.dirtyUsage = true;
+      try { await this.ctx.storage.setAlarm?.(now + USAGE_FLUSH_MS); } catch { /* optional */ }
+    }
     return { blocked };
   }
 
@@ -351,40 +400,57 @@ export class PanelStore extends DurableObject {
 /* ── per-isolate cache of the tunnel allow-list ─────────────────────── */
 
 let ACTIVE = { at: 0, data: null, vless: null, trojan: null };
+let ACTIVE_INFLIGHT = null;
 /** Rejects instead of waiting forever, so a stuck storage call becomes a readable error. */
 function withTimeout(promise, ms, label) {
   let timer;
-  const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`storage timed out (${label}, ${ms} ms)`)), ms); });
-  return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
+  return new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`storage timed out (${label}, ${ms} ms)`)), ms);
+    Promise.resolve(promise).then(resolve, reject);
+  }).finally(() => clearTimeout(timer));
 }
-/** The Durable Object stub; every call is bounded by a time limit. */
+/** The Durable Object stub; every call is invoked directly on the native stub and bounded by a time limit. */
 const storeOf = (env) => {
+  if (!env || !env.STORE) throw new Error('STORE Durable Object binding is missing');
   const stub = env.STORE.get(env.STORE.idFromName('main'));
   const ms = Number(env.STORAGE_TIMEOUT_MS) || 10_000;
-  return new Proxy(stub, {
-    get: (target, name) => {
-      const value = target[name];
-      return typeof value === 'function' ? (...args) => withTimeout(target[name](...args), ms, String(name)) : value;
-    },
-  });
+  return {
+    active: () => withTimeout(stub.active(), ms, 'active'),
+    snapshot: () => withTimeout(stub.snapshot(), ms, 'snapshot'),
+    save: (doc, rev) => withTimeout(stub.save(doc, rev), ms, 'save'),
+    resetUsage: (id) => withTimeout(stub.resetUsage(id), ms, 'resetUsage'),
+    replaceAll: (doc, usage) => withTimeout(stub.replaceAll(doc, usage), ms, 'replaceAll'),
+    addUsage: (entries) => withTimeout(stub.addUsage(entries), ms, 'addUsage'),
+    hit: (key, max, windowMs) => withTimeout(stub.hit(key, max, windowMs), ms, 'hit'),
+    clearHits: (key) => withTimeout(stub.clearHits(key), ms, 'clearHits'),
+  };
 };
 
 async function activeSet(env, force = false) {
   if (!force && ACTIVE.data && Date.now() - ACTIVE.at < ACTIVE_TTL_MS) return ACTIVE;
-  let data = await storeOf(env).active();
-  const want = envAdminPath(env);
-  if (want && data.paths.admin !== want) {
-    // ADMIN_PATH changed in the Cloudflare dashboard: the variable wins.
-    await mutate(env, (d) => { d.settings.adminPath = want; event(d, 'settings', 'admin path updated from ADMIN_PATH'); return null; });
-    data = await storeOf(env).active();
+  if (!force && ACTIVE_INFLIGHT) return ACTIVE_INFLIGHT;
+  const load = (async () => {
+    let data = await storeOf(env).active();
+    const want = envAdminPath(env);
+    if (want && data.paths.admin !== want) {
+      // ADMIN_PATH changed in the Cloudflare dashboard: the variable wins.
+      await mutate(env, (d) => { d.settings.adminPath = want; event(d, 'settings', 'admin path updated from ADMIN_PATH'); return null; });
+      data = await storeOf(env).active();
+    }
+    ACTIVE = {
+      at: Date.now(),
+      data,
+      vless: new Map(data.users.map((u) => [u.uuid, u.id])),
+      trojan: new Map(data.users.map((u) => [u.th, u.id])),
+    };
+    return ACTIVE;
+  })();
+  ACTIVE_INFLIGHT = load;
+  try {
+    return await load;
+  } finally {
+    if (ACTIVE_INFLIGHT === load) ACTIVE_INFLIGHT = null;
   }
-  ACTIVE = {
-    at: Date.now(),
-    data,
-    vless: new Map(data.users.map((u) => [u.uuid, u.id])),
-    trojan: new Map(data.users.map((u) => [u.th, u.id])),
-  };
-  return ACTIVE;
 }
 
 /* ── tunnels ────────────────────────────────────────────────────────── */
@@ -541,8 +607,16 @@ function tunnel(request, env, ctx, kind, cache) {
       return;
     }
     remote = await dial(head);
+    if (closed) {
+      try { remote.close(); } catch { /* ignore */ }
+      return;
+    }
     writer = remote.writable.getWriter();
     if (head.rest.byteLength) await writer.write(head.rest);
+    if (closed) {
+      try { writer.releaseLock(); remote.close(); } catch { /* ignore */ }
+      return;
+    }
     flushTimer = setInterval(() => { report(false); }, FLUSH_MS);
     pump(remote, head.reply).then(async ({ got, headerSent }) => {
       const proxy = splitHostPort(cache.data.proxyIp, 443);
@@ -552,13 +626,17 @@ function tunnel(request, env, ctx, kind, cache) {
         try {
           try { writer.releaseLock(); remote.close(); } catch { /* ignore */ }
           remote = await openSocket(proxy.host, proxy.port);
+          if (closed) {
+            try { remote.close(); } catch { /* ignore */ }
+            return;
+          }
           writer = remote.writable.getWriter();
           if (first.rest.byteLength) await writer.write(first.rest);
           await pump(remote, headerSent ? null : first.reply);
         } catch { /* fall through */ }
       }
       close();
-    });
+    }).catch(() => close());
   };
 
   let chain = Promise.resolve();
@@ -868,7 +946,7 @@ function serveAsset(rel, base, extra = {}) {
   const key = rel === '' || rel === '/' ? '/index.html' : rel;
   const a = ASSETS[key];
   if (!a) return null;
-  let body = a.text !== undefined ? a.text : fromB64(a.b64);
+  let body = a.text !== undefined ? a.text : (a.bytes || (a.bytes = fromB64(a.b64)));
   if (key === '/index.html' || key === '/portal.html') {
     body = body.replace('<meta name="panel-base" content="">', `<meta name="panel-base" content="${base}">`);
     for (const [k, v] of Object.entries(extra)) body = body.replace(`<meta name="${k}" content="">`, `<meta name="${k}" content="${v}">`);
@@ -1152,6 +1230,9 @@ async function handle(request, env, ctx) {
   // "/", "/favicon.ico" and "/robots.txt" are never ours: answer them without touching storage.
   const isWs = (request.headers.get('upgrade') || '').toLowerCase() === 'websocket';
   if (!isWs && ['/', '/favicon.ico', '/robots.txt'].includes(url.pathname)) return notFound();
+  if (!isWs && (url.pathname.startsWith('/fonts/') || url.pathname.startsWith('/assets/'))) {
+    return serveAsset(url.pathname, '') || notFound();
+  }
   let cache;
   try {
     cache = await activeSet(env);
