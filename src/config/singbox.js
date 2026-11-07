@@ -65,8 +65,6 @@ function transportBlock(ib) {
     return {
       type: 'ws',
       path: httpPath,
-      max_early_data: 2048,
-      early_data_header_name: 'Sec-WebSocket-Protocol',
       ...(params.host ? { headers: { Host: params.host } } : {}),
     };
   }
@@ -226,11 +224,8 @@ export function buildSingboxConfig({ doc, reality, certs, sharedSsPassword, serv
     outbounds: [{ type: 'direct', tag: 'direct', tcp_fast_open: true }, ...bridge],
     route: {
       rules: [
-        { action: 'sniff', timeout: '300ms' },
-        { protocol: 'dns', action: 'hijack-dns' },
+        { action: 'sniff', timeout: '100ms' },
         { domain_suffix: ['localhost', 'local', 'internal'], action: 'reject' },
-        // Resolve names first so the private-range check also covers domains.
-        { action: 'resolve', strategy: 'prefer_ipv4' },
         { ip_is_private: true, action: 'reject' },
         ...active.map((u) => ({ auth_user: [`u-${u.id}`], outbound: `acct-${u.id}` })),
       ],

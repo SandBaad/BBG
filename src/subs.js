@@ -96,7 +96,7 @@ export function base64Sub(doc, user) {
 
 function xrayOutbound(link, opts = {}) {
   const c = link.conn;
-  const useFragment = opts.fragment !== false && (c.security === 'tls-edge' || c.security === 'tls-self');
+  const useFragment = opts.fragment !== false && (c.security === 'tls-edge' || c.security === 'tls-self' || c.security === 'reality');
   const stream = {
     network: c.transport === 'tcp' ? 'tcp' : c.transport,
     sockopt: {
@@ -242,15 +242,15 @@ export function xrayJson(doc, user) {
         domainStrategy: 'UseIP',
         fragment: {
           packets: 'tlshello',
-          length: '100-200',
-          interval: '10-20',
+          length: '10-30',
+          interval: '10-15',
         },
       },
       streamSettings: {
         sockopt: {
           tcpNoDelay: true,
           tcpFastOpen: true,
-          tcpKeepAliveIdle: 100,
+          tcpKeepAliveIdle: 60,
         },
       },
     });
@@ -271,8 +271,8 @@ export function xrayJson(doc, user) {
     dns: {
       // Remote DoH routed over the proxy tunnel (NOT +local, which blackholes on censored ISPs)
       servers: [
-        'https://1.1.1.1/dns-query',
         'https://8.8.8.8/dns-query',
+        'https://1.1.1.1/dns-query',
         { address: '1.1.1.1', port: 53, domains: ['domain:ir'] },
         'localhost',
       ],
@@ -328,6 +328,7 @@ function singboxOutbound(link, user, opts = {}) {
         server_name: c.sni,
         utls: { enabled: true, fingerprint: c.fingerprint || 'chrome' },
         reality: { enabled: true, public_key: c.publicKey, short_id: c.shortId },
+        ...tlsFrag(),
       };
     }
     return {
@@ -351,8 +352,6 @@ function singboxOutbound(link, user, opts = {}) {
         type: 'ws',
         path: c.rawPath || c.path.split('?')[0],
         headers: { Host: c.hostHeader },
-        max_early_data: 2048,
-        early_data_header_name: 'Sec-WebSocket-Protocol',
       };
     }
     if (c.transport === 'httpupgrade') {

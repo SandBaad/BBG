@@ -40,9 +40,7 @@ export function connectionFor(doc, inbound, user) {
   const target = hostFor(inbound, rt);
   const rawPath = inbound.edge === 'http' ? edgePath(inbound) : params.path || '/';
   const cleanPath = rawPath.split('?')[0];
-  const wsPathWithEarlyData = inbound.transport === 'ws'
-    ? `${cleanPath}${cleanPath.includes('?') ? '&' : '?'}ed=2048`
-    : cleanPath;
+  const wsPathWithEarlyData = cleanPath;
 
   const base = {
     inboundId: inbound.id,
@@ -111,6 +109,7 @@ export function vmessLink(conn, user, label) {
 export function toUri(doc, conn, user, label) {
   const enc = encodeURIComponent(label);
   const pin = conn.security === 'tls-self' ? certPin() : '';
+  const useFrag = doc?.settings?.fragment !== false && conn.security !== 'none';
   switch (conn.protocol) {
     case 'vless': {
       const params = {
@@ -139,6 +138,7 @@ export function toUri(doc, conn, user, label) {
         serviceName: conn.transport === 'grpc' ? conn.serviceName : undefined,
         pcs: pin || undefined,
         allowInsecure: conn.security === 'tls-self' ? '1' : undefined,
+        fragment: useFrag ? '10-30,10-15,tlshello' : undefined,
       };
       return `vless://${user.secrets.uuid}@${conn.host}:${conn.port}?${q(params)}#${enc}`;
     }
@@ -156,6 +156,7 @@ export function toUri(doc, conn, user, label) {
         serviceName: conn.transport === 'grpc' ? conn.serviceName : undefined,
         pcs: pin || undefined,
         allowInsecure: conn.security === 'tls-self' ? '1' : undefined,
+        fragment: useFrag ? '10-30,10-15,tlshello' : undefined,
       };
       return `trojan://${encodeURIComponent(user.secrets.password)}@${conn.host}:${conn.port}?${q(params)}#${enc}`;
     }

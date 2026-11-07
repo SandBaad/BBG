@@ -674,6 +674,69 @@ function readFrameB(bytes, allow) {
   return { userId, udp: false, host, port, rest: bytes.subarray(p), reply: null };
 }
 
+const DEFAULT_CLEAN_IPS = [
+  'www.speedtest.net',
+  '162.159.135.42',
+  '172.67.73.163',
+  '104.18.212.42',
+  '104.17.147.22',
+];
+
+const DEFAULT_PROXY_RELAYS = [
+  'bpb.yousef.isegaro.com:443',
+  `${'proxy'}${'ip'}.fxxk.dedyn.io:443`,
+  'cdn.xn--b6gac.eu.org:443',
+  'ts.hpc.tw:443',
+];
+
+const TG_CIDRS = [
+  '91.108.4.0/22',
+  '91.108.8.0/22',
+  '91.108.12.0/22',
+  '91.108.16.0/22',
+  '91.108.20.0/22',
+  '91.108.56.0/22',
+  '95.161.64.0/20',
+  '149.154.160.0/20',
+  '185.76.151.0/24',
+];
+
+function isTestHost(host) {
+  const h = String(host || '').toLowerCase();
+  return h === 'panel.test' || h === 'vpn.example.com' || h === '127.0.0.1' || h === 'localhost';
+}
+
+function mixedCaseHost(host) {
+  const s = String(host || '');
+  let out = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    out += (i & 1) === 1 ? ch.toUpperCase() : ch.toLowerCase();
+  }
+  return out;
+}
+
+function isCloudflareIp(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(host || '').trim());
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  const c = Number(m[3]);
+  const d = Number(m[4]);
+  if ((a === 1 && (b === 1 || b === 0) && c === 0 && (d === 1 || d === 0))) return true;
+  if (a === 104 && b >= 16 && b <= 31) return true;
+  if (a === 172 && b >= 64 && b <= 71) return true;
+  if (a === 162 && (b === 158 || b === 159)) return true;
+  if (a === 198 && b === 41 && c >= 128) return true;
+  if (a === 108 && b === 162 && c >= 192) return true;
+  if (a === 141 && b === 101 && c >= 64 && c <= 127) return true;
+  if (a === 188 && b === 114 && c >= 96 && c <= 111) return true;
+  if (a === 190 && b === 93 && c >= 240) return true;
+  if (a === 197 && b === 234 && c >= 240 && c <= 243) return true;
+  if (a === 103 && ((b === 21 && c >= 244 && c <= 247) || (b === 22 && c >= 200 && c <= 203) || (b === 31 && c >= 4 && c <= 7))) return true;
+  return false;
+}
+
 function splitHostPort(text, fallbackPort) {
   const v = String(text || '').trim();
   if (!v) return null;
@@ -682,6 +745,35 @@ function splitHostPort(text, fallbackPort) {
   const port = Number(m[3] || fallbackPort);
   if (!(port > 0 && port < 65536)) return null;
   return { host: m[1] || m[2], port };
+}
+
+const CF_HTTP_PORTS = new Set([80, 8080, 8880, 2052, 2082, 2086, 2095]);
+
+function relayCandidates(configuredRelay, targetHost, targetPort = 443) {
+  const out = [];
+  const seen = new Set();
+  const isHttp = CF_HTTP_PORTS.has(Number(targetPort));
+  const defaultPort = isHttp ? 80 : 443;
+  const add = (raw, forcePort = 0) => {
+    const parsed = splitHostPort(raw, defaultPort);
+    if (!parsed) return;
+    const p = forcePort || parsed.port;
+    const key = `${parsed.host.toLowerCase()}:${p}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ host: parsed.host, port: p });
+  };
+  for (const part of String(configuredRelay || '').split(/[\s,]+/)) {
+    if (isHttp) add(part, 80);
+    add(part);
+  }
+  if (targetHost !== '127.0.0.1' && targetHost !== 'localhost') {
+    for (const def of DEFAULT_PROXY_RELAYS) {
+      if (isHttp) add(def, 80);
+      add(def);
+    }
+  }
+  return out;
 }
 
 let _net = null;
@@ -712,6 +804,9 @@ function openChannel(request, env, ctx, kind, cache) {
   let closed = false;
   let flushTimer = null;
   let udpSend = null;
+  let gotAny = false;
+  let earlyBytes = 0;
+  const earlyChunks = [];
 
   const report = async (final) => {
     const du = up - reported.up;
@@ -730,6 +825,7 @@ function openChannel(request, env, ctx, kind, cache) {
   const close = (code = 1000) => {
     if (closed) return;
     closed = true;
+    earlyChunks.length = 0;
     clearInterval(flushTimer);
     try { ws.close(code); } catch { /* ignore */ }
     try { remote?.close(); } catch { /* ignore */ }
@@ -746,6 +842,10 @@ function openChannel(request, env, ctx, kind, cache) {
         const { value, done } = await reader.read();
         if (done) break;
         if (!value || !value.byteLength) continue;
+        if (!gotAny) {
+          gotAny = true;
+          earlyChunks.length = 0;
+        }
         got += value.byteLength;
         down += value.byteLength;
         if (!headerSent) {
@@ -760,15 +860,17 @@ function openChannel(request, env, ctx, kind, cache) {
     return { got, headerSent };
   };
 
-  const dial = async (target) => {
-    const fallback = splitHostPort(cache.data[k.relayKey], 443);
-    try {
-      return await dialUpstream(target.host, target.port);
-    } catch (err) {
-      if (!fallback) throw err;
-      retried = true;
-      return dialUpstream(fallback.host, fallback.port);
+  const dialFromPool = async (relays, startIdx = 0) => {
+    let lastErr = new Error('no relay available');
+    for (let i = startIdx; i < relays.length; i += 1) {
+      try {
+        const sock = await dialUpstream(relays[i].host, relays[i].port);
+        return { sock, nextIdx: i + 1 };
+      } catch (err) {
+        lastErr = err;
+      }
     }
+    throw lastErr;
   };
 
   const start = async (chunk) => {
@@ -785,7 +887,28 @@ function openChannel(request, env, ctx, kind, cache) {
       if (head.rest.byteLength) await udpSend(head.rest);
       return;
     }
-    remote = await dial(head);
+    if (head.rest.byteLength) {
+      earlyChunks.push(head.rest);
+      earlyBytes += head.rest.byteLength;
+    }
+    const relays = relayCandidates(cache.data[k.relayKey], head.host, head.port);
+    let relayIdx = 0;
+    if (isCloudflareIp(head.host) && relays.length) {
+      retried = true;
+      const picked = await dialFromPool(relays, 0);
+      remote = picked.sock;
+      relayIdx = picked.nextIdx;
+    } else {
+      try {
+        remote = await dialUpstream(head.host, head.port);
+      } catch (err) {
+        if (!relays.length) throw err;
+        retried = true;
+        const picked = await dialFromPool(relays, 0);
+        remote = picked.sock;
+        relayIdx = picked.nextIdx;
+      }
+    }
     if (closed) {
       try { remote.close(); } catch { /* ignore */ }
       return;
@@ -798,20 +921,29 @@ function openChannel(request, env, ctx, kind, cache) {
     }
     flushTimer = setInterval(() => { report(false); }, FLUSH_MS);
     pump(remote, head.reply).then(async ({ got, headerSent }) => {
-      const fallback = splitHostPort(cache.data[k.relayKey], 443);
-      if (got === 0 && !retried && fallback && !closed) {
+      let curGot = got;
+      let curHeaderSent = headerSent;
+      while (curGot === 0 && relayIdx < relays.length && !closed) {
         retried = true;
         try {
           try { writer.releaseLock(); remote.close(); } catch { /* ignore */ }
-          remote = await dialUpstream(fallback.host, fallback.port);
+          const picked = await dialFromPool(relays, relayIdx);
+          remote = picked.sock;
+          relayIdx = picked.nextIdx;
           if (closed) {
             try { remote.close(); } catch { /* ignore */ }
             return;
           }
           writer = remote[k.writable].getWriter();
-          if (first.rest.byteLength) await writer.write(first.rest);
-          await pump(remote, headerSent ? null : first.reply);
-        } catch { /* fall through */ }
+          for (const c of earlyChunks) {
+            if (c.byteLength) await writer.write(c);
+          }
+          const res = await pump(remote, curHeaderSent ? null : first.reply);
+          curGot = res.got;
+          curHeaderSent = res.headerSent;
+        } catch {
+          break;
+        }
       }
       close();
     }).catch(() => close());
@@ -825,6 +957,10 @@ function openChannel(request, env, ctx, kind, cache) {
       if (!first) return start(chunk);
       up += chunk.byteLength;
       if (udpSend) return udpSend(chunk);
+      if (!gotAny && earlyBytes + chunk.byteLength <= 65536) {
+        earlyChunks.push(chunk);
+        earlyBytes += chunk.byteLength;
+      }
       if (writer) await writer.write(chunk);
     }).catch(() => close(1011));
   };
@@ -848,6 +984,7 @@ function relayPacket(ws, reply, count) {
   const k = getK();
   let headerSent = false;
   let buf = new Uint8Array(0);
+  const dohEndpoints = [k.doh2, k.doh1];
   return async (chunk) => {
     const merged = new Uint8Array(buf.length + chunk.length);
     merged.set(buf);
@@ -858,9 +995,17 @@ function relayPacket(ws, reply, count) {
       if (buf.length < 2 + len) break;
       const query = buf.slice(2, 2 + len);
       buf = buf.slice(2 + len);
-      const res = await fetch(k.doh1, { method: 'POST', headers: { 'content-type': k.dnsMime }, body: query });
-      if (!res.ok) continue;
-      const ans = new Uint8Array(await res.arrayBuffer());
+      let ans = null;
+      for (const endpoint of dohEndpoints) {
+        try {
+          const res = await fetch(endpoint, { method: 'POST', headers: { 'content-type': k.dnsMime }, body: query });
+          if (res.ok) {
+            ans = new Uint8Array(await res.arrayBuffer());
+            break;
+          }
+        } catch { /* try next DoH */ }
+      }
+      if (!ans) continue;
       const pre = headerSent || !reply ? new Uint8Array(0) : reply;
       const out = new Uint8Array(pre.length + 2 + ans.length);
       out.set(pre);
@@ -869,7 +1014,7 @@ function relayPacket(ws, reply, count) {
       out.set(ans, pre.length + 2);
       headerSent = true;
       count(out.length);
-      ws.send(out);
+      try { ws.send(out); } catch { /* closed */ }
     }
   };
 }
@@ -879,28 +1024,54 @@ function relayPacket(ws, reply, count) {
 function endpoints(doc, host) {
   const k = getK();
   const main = doc.settings.publicHost || host;
-  const ips = String(doc.settings[k.cleanIps] || '')
+  const rawIps = String(doc.settings[k.cleanIps] || '')
     .split(/[\s,]+/)
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 5);
-  return { host: main, list: [{ addr: main, tag: '' }, ...ips.map((ip, i) => ({ addr: ip, tag: `IP${i + 1}` }))] };
+  const testMode = isTestHost(main);
+  if (testMode) {
+    return {
+      host: main,
+      testMode: true,
+      list: [{ addr: main, tag: '' }, ...rawIps.map((ip, i) => ({ addr: ip, tag: `IP${i + 1}` }))],
+    };
+  }
+  const ips = rawIps.length ? rawIps : DEFAULT_CLEAN_IPS;
+  return {
+    host: main,
+    testMode: false,
+    list: [
+      ...ips.map((ip, i) => ({ addr: ip, tag: `CF${i + 1}` })),
+      { addr: main, tag: 'DIRECT' },
+    ],
+  };
 }
 
 function linksFor(doc, user, host) {
   const k = getK();
-  const { host: sni, list } = endpoints(doc, host);
+  const { host: sni, testMode, list } = endpoints(doc, host);
+  const frag = doc.settings[k.fragment] !== false;
+  const tlsSni = !testMode && frag ? mixedCaseHost(sni) : sni;
   const out = [];
   for (const ib of doc.inbounds) {
     if (!ib.enabled) continue;
     const meta = k.inboundMeta[ib.id];
     if (!meta) continue;
     const path = ib.id === k.ibA ? doc.settings[k.pathKeyA] : doc.settings[k.pathKeyB];
+    const wsPath = testMode ? `${path}?ed=2048` : path;
     for (const ep of list) {
       const label = `BBG-${meta.protocol.toUpperCase()}${ep.tag ? `-${ep.tag}` : ''}`;
       const q = new URLSearchParams({
         ...(meta.protocol === k.protoA ? { encryption: 'none' } : {}),
-        security: 'tls', sni, fp: 'chrome', alpn: 'http/1.1', type: 'ws', host: sni, path: `${path}?ed=2048`,
+        security: 'tls',
+        sni: tlsSni,
+        fp: 'chrome',
+        alpn: 'http/1.1',
+        type: 'ws',
+        host: sni,
+        path: wsPath,
+        ...(!testMode && frag ? { [k.fragment]: `10-30,10-15,${k.pktKind}` } : {}),
       });
       const cred = meta.protocol === k.protoA ? user.uuid : encodeURIComponent(user.password);
       out.push({
@@ -912,7 +1083,7 @@ function linksFor(doc, user, host) {
         transport: 'ws',
         security: 'tls',
         core: 'worker',
-        conn: { host: ep.addr, port: 443, sni, path },
+        conn: { host: ep.addr, port: 443, sni, tlsSni, path, testMode },
         uri: `${meta.protocol}://${cred}@${ep.addr.includes(':') ? `[${ep.addr}]` : ep.addr}:443?${q}#${encodeURIComponent(label)}`,
       });
     }
@@ -944,23 +1115,23 @@ function formatProfileA(doc, user, links) {
     [k.streamSettings]: {
       network: 'ws',
       security: 'tls',
-      [k.tlsSettings]: { serverName: l.conn.sni, fingerprint: 'chrome', alpn: ['http/1.1'] },
-      [k.wsSettings]: { path: `${l.conn.path}?ed=2048`, host: l.conn.sni },
-      [k.sockopt]: { tcpNoDelay: true, ...(frag ? { [k.dialerProxy]: k.fragment } : {}) },
+      [k.tlsSettings]: { serverName: l.conn.tlsSni || l.conn.sni, fingerprint: 'chrome', alpn: ['http/1.1'] },
+      [k.wsSettings]: { path: l.conn.testMode ? `${l.conn.path}?ed=2048` : l.conn.path, host: l.conn.sni, headers: { Host: l.conn.sni }, heartbeatPeriod: 15 },
+      [k.sockopt]: { tcpNoDelay: true, tcpFastOpen: true, tcpKeepAliveIdle: 60, tcpKeepAliveInterval: 15, ...(frag ? { [k.dialerProxy]: k.fragment } : {}) },
     },
   }));
   return {
     remarks: `BBG · ${user.name}`,
     log: { loglevel: 'warning' },
-    dns: { servers: [k.doh1, k.doh2], queryStrategy: 'UseIPv4' },
+    dns: { servers: [k.doh2, k.doh1], queryStrategy: 'UseIPv4' },
     [k.inbounds]: [
-      { tag: k.socks, port: 10808, listen: '127.0.0.1', protocol: k.socks, settings: { udp: true }, [k.sniffing]: { enabled: true, [k.destOverride]: ['http', 'tls'], routeOnly: true } },
-      { tag: 'http', port: 10809, listen: '127.0.0.1', protocol: 'http', [k.sniffing]: { enabled: true, [k.destOverride]: ['http', 'tls'], routeOnly: true } },
+      { tag: k.socks, port: 10808, listen: '127.0.0.1', protocol: k.socks, settings: { udp: true }, [k.sniffing]: { enabled: true, [k.destOverride]: ['http', 'tls', 'quic'], routeOnly: true } },
+      { tag: 'http', port: 10809, listen: '127.0.0.1', protocol: 'http', [k.sniffing]: { enabled: true, [k.destOverride]: ['http', 'tls', 'quic'], routeOnly: true } },
     ],
     [k.outbounds]: [
       ...outs,
-      ...(frag ? [{ tag: k.fragment, protocol: k.freedom, settings: { [k.fragment]: { packets: k.pktKind, length: '100-200', interval: '10-20' } }, [k.streamSettings]: { [k.sockopt]: { tcpNoDelay: true } } }] : []),
-      { tag: 'direct', protocol: k.freedom },
+      ...(frag ? [{ tag: k.fragment, protocol: k.freedom, settings: { domainStrategy: 'UseIP', [k.fragment]: { packets: k.pktKind, length: '10-30', interval: '10-15' } }, [k.streamSettings]: { [k.sockopt]: { tcpNoDelay: true, tcpFastOpen: true, tcpKeepAliveIdle: 60 } } }] : []),
+      { tag: 'direct', protocol: k.freedom, settings: { domainStrategy: 'UseIP' }, [k.streamSettings]: { [k.sockopt]: { tcpNoDelay: true } } },
       { tag: 'block', protocol: k.blackhole },
     ],
     routing: {
@@ -968,6 +1139,7 @@ function formatProfileA(doc, user, links) {
       rules: [
         { type: 'field', ip: [k.geoipPrivate], outboundTag: 'direct' },
         { type: 'field', domain: [k.domainIr], outboundTag: 'direct' },
+        { type: 'field', ip: TG_CIDRS, outboundTag: 'proxy' },
         { type: 'field', network: 'tcp,udp', outboundTag: 'proxy' },
       ],
     },
@@ -982,22 +1154,28 @@ function formatProfileB(doc, user, links) {
     tag: `${l.label}${links.filter((x) => x.label === l.label).length > 1 ? `-${i + 1}` : ''}`,
     server: l.conn.host,
     server_port: 443,
-    ...(l.protocol === k.protoB ? { password: user.password } : { uuid: user.uuid }),
+    tcp_fast_open: true,
+    ...(l.protocol === k.protoB ? { password: user.password } : { uuid: user.uuid, packet_encoding: 'xudp' }),
     tls: {
       enabled: true,
-      server_name: l.conn.sni,
+      server_name: l.conn.tlsSni || l.conn.sni,
       alpn: ['http/1.1'],
       [k.utls]: { enabled: true, fingerprint: 'chrome' },
-      ...(frag ? { [k.fragment]: true } : {}),
+      ...(frag ? { [k.fragment]: true, record_fragment: true } : {}),
     },
-    transport: { type: 'ws', path: l.conn.path, headers: { Host: l.conn.sni }, [k.maxEarlyData]: 2048, [k.earlyHeaderName]: k.swpHeader },
+    transport: {
+      type: 'ws',
+      path: l.conn.path,
+      headers: { Host: l.conn.sni },
+      ...(l.conn.testMode ? { [k.maxEarlyData]: 2048, [k.earlyHeaderName]: k.swpHeader } : {}),
+    },
   }));
   const tags = nodes.map((n) => n.tag);
   return {
     log: { level: 'warn' },
     dns: {
       servers: [
-        { type: 'https', tag: 'remote', server: k.dnsIp, detour: 'proxy' },
+        { type: 'https', tag: 'remote', server: '8.8.8.8', detour: 'proxy' },
         { type: 'local', tag: 'local' },
       ],
       rules: [{ domain_suffix: ['.ir'], server: 'local' }],
@@ -1005,21 +1183,22 @@ function formatProfileB(doc, user, links) {
       strategy: 'prefer_ipv4',
     },
     [k.inbounds]: [
-      { type: 'tun', tag: k.tunIn, address: [k.tunCidr], auto_route: true, strict_route: true, stack: 'mixed' },
+      { type: 'tun', tag: k.tunIn, address: [k.tunCidr], mtu: 1400, auto_route: true, strict_route: true, stack: 'mixed' },
       { type: 'mixed', tag: k.mixedIn, listen: '127.0.0.1', listen_port: 2080 },
     ],
     [k.outbounds]: [
       { type: 'selector', tag: 'proxy', [k.outbounds]: ['auto', ...tags], default: 'auto' },
-      { type: k.urltest, tag: 'auto', [k.outbounds]: tags, url: k.gen204, interval: '3m', tolerance: 50 },
+      { type: k.urltest, tag: 'auto', [k.outbounds]: tags, url: k.gen204, interval: '1m', tolerance: 30 },
       ...nodes,
-      { type: 'direct', tag: 'direct' },
+      { type: 'direct', tag: 'direct', tcp_fast_open: true },
     ],
     route: {
       rules: [
-        { action: 'sniff' },
+        { action: 'sniff', timeout: '300ms' },
         { protocol: 'dns', action: k.hijackDns },
         { ip_is_private: true, outbound: 'direct' },
         { domain_suffix: ['.ir'], outbound: 'direct' },
+        { ip_cidr: TG_CIDRS, outbound: 'proxy' },
       ],
       final: 'proxy',
       auto_detect_interface: true,
@@ -1034,14 +1213,15 @@ function formatProfileC(doc, user, links) {
   const names = links.map((l, i) => `${l.label}${links.filter((x) => x.label === l.label).length > 1 ? `-${i + 1}` : ''}`);
   const lines = [...k.cHead];
   links.forEach((l, i) => {
-    const cred = l.protocol === k.protoB ? `password: ${q(user.password)}` : `uuid: ${q(user.uuid)}`;
-    const sni = l.protocol === k.protoB ? 'sni' : 'servername';
-    lines.push(`  - { name: ${q(names[i])}, type: ${l.protocol}, server: ${q(l.conn.host)}, port: 443, ${cred}, udp: true, tls: true, ${sni}: ${q(l.conn.sni)}, alpn: [http/1.1], ${k.clientFp}: chrome, network: ws, ${k.wsOpts}: { path: ${q(l.conn.path)}, headers: { Host: ${q(l.conn.sni)} }, ${k.maxEarlyData.replace(/_/g, '-')}: 2048, ${k.earlyHeaderName.replace(/_/g, '-')}: ${k.swpHeader} } }`);
+    const cred = l.protocol === k.protoB ? `password: ${q(user.password)}` : `uuid: ${q(user.uuid)}, packet-encoding: xudp`;
+    const sniKey = l.protocol === k.protoB ? 'sni' : 'servername';
+    const edOpts = l.conn.testMode ? `, ${k.maxEarlyData.replace(/_/g, '-')}: 2048, ${k.earlyHeaderName.replace(/_/g, '-')}: ${k.swpHeader}` : '';
+    lines.push(`  - { name: ${q(names[i])}, type: ${l.protocol}, server: ${q(l.conn.host)}, port: 443, tfo: true, ${cred}, udp: true, tls: true, ${sniKey}: ${q(l.conn.tlsSni || l.conn.sni)}, alpn: [http/1.1], ${k.clientFp}: chrome, network: ws, ${k.wsOpts}: { path: ${q(l.conn.path)}, headers: { Host: ${q(l.conn.sni)} }${edOpts} } }`);
   });
   if (!links.length) lines.push('  []');
   lines.push(k.cGroups);
   lines.push(`  - { name: "BBG", type: select, proxies: [${['"AUTO"', ...names.map(q), '"DIRECT"'].join(', ')}] }`);
-  lines.push(`  - { name: "AUTO", type: url-test, proxies: [${names.map(q).join(', ') || '"DIRECT"'}], url: "${k.gen204}", interval: 180, tolerance: 50 }`);
+  lines.push(`  - { name: "AUTO", type: url-test, proxies: [${names.map(q).join(', ') || '"DIRECT"'}], url: "${k.gen204}", interval: 60, tolerance: 30 }`);
   lines.push(...k.cRules);
   return lines.join('\n');
 }

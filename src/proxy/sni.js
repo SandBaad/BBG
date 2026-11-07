@@ -8,8 +8,10 @@
 import crypto from 'node:crypto';
 
 export function peekSni(buf) {
-  if (!buf || buf.length < 5) return null;
-  if (buf[0] !== 0x16 || buf[1] !== 0x03) return null; // Not a TLS handshake record
+  if (!buf || !buf.length) return null;
+  if (buf[0] !== 0x16) return null; // Not a TLS handshake record
+  if (buf.length < 5) return { incomplete: true, sni: '' };
+  if (buf[1] !== 0x03) return null;
 
   // Reassemble one or more contiguous TLS Handshake (0x16) records
   const chunks = [];
@@ -101,7 +103,7 @@ export function peekSni(buf) {
 /** Fast first-packet protocol classification for the TCP multiplexer. */
 export function classify(buf) {
   if (!buf || !buf.length) return 'unknown';
-  if (buf[0] === 0x16 && buf[1] === 0x03) return 'tls';
+  if (buf[0] === 0x16 && (buf.length === 1 || buf[1] === 0x03)) return 'tls';
   if (buf[0] === 0x05) return 'socks5';
   const head = buf.subarray(0, 8).toString('latin1').toUpperCase();
   if (head.startsWith('CONNECT ')) return 'http-connect';

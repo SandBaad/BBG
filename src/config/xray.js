@@ -222,7 +222,12 @@ export function buildXrayConfig({ doc, reality, certs, sharedSsPassword, serverS
         clients: users.filter((u) => effectiveEnabled(u)).map((u) => ({ id: u.secrets.uuid, email: clientEmail(u) })),
         decryption: 'none',
       },
-      streamSettings: { network: 'tcp', security: 'none' },
+      streamSettings: { network: 'tcp', security: 'none', sockopt: { tcpNoDelay: true } },
+      sniffing: {
+        enabled: true,
+        destOverride: ['http', 'tls', 'quic'],
+        routeOnly: true,
+      },
     });
   }
 
