@@ -674,9 +674,15 @@ function readFrameB(bytes, allow) {
   return { userId, udp: false, host, port, rest: bytes.subarray(p), reply: null };
 }
 
+const DEFAULT_CUSTOM_DOMAINS = [
+  { host: 'bbg.sandbaad.buzz', tag: 'SANDBAAD' },
+  { host: 'bbg.heyvoon.shop', tag: 'HEYVOON' },
+  { host: 'bbg.mq1.online', tag: 'MQ1' },
+  { host: 'bbg.tiunnel.com', tag: 'TIUNNEL' },
+];
+
 const DEFAULT_CLEAN_IPS = [
   'www.speedtest.net',
-  '162.159.135.42',
   '172.67.73.163',
   '104.18.212.42',
   '104.17.147.22',
@@ -704,16 +710,6 @@ const TG_CIDRS = [
 function isTestHost(host) {
   const h = String(host || '').toLowerCase();
   return h === 'panel.test' || h === 'vpn.example.com' || h === '127.0.0.1' || h === 'localhost';
-}
-
-function mixedCaseHost(host) {
-  const s = String(host || '');
-  let out = '';
-  for (let i = 0; i < s.length; i += 1) {
-    const ch = s[i];
-    out += (i & 1) === 1 ? ch.toUpperCase() : ch.toLowerCase();
-  }
-  return out;
 }
 
 function isCloudflareIp(host) {
@@ -1023,55 +1019,69 @@ function relayPacket(ws, reply, count) {
 
 function endpoints(doc, host) {
   const k = getK();
-  const main = doc.settings.publicHost || host;
+  const rawMain = doc.settings.publicHost || host;
   const rawIps = String(doc.settings[k.cleanIps] || '')
     .split(/[\s,]+/)
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 5);
-  const testMode = isTestHost(main);
+  const testMode = isTestHost(rawMain);
   if (testMode) {
     return {
-      host: main,
+      host: rawMain,
       testMode: true,
-      list: [{ addr: main, tag: '' }, ...rawIps.map((ip, i) => ({ addr: ip, tag: `IP${i + 1}` }))],
+      list: [{ addr: rawMain, sni: rawMain, tag: '' }, ...rawIps.map((ip, i) => ({ addr: ip, sni: rawMain, tag: `IP${i + 1}` }))],
     };
   }
+  const main = !doc.settings.publicHost && /\.workers\.dev$/i.test(rawMain)
+    ? DEFAULT_CUSTOM_DOMAINS[0].host
+    : rawMain;
   const ips = rawIps.length ? rawIps : DEFAULT_CLEAN_IPS;
+  if (doc.settings.publicHost) {
+    return {
+      host: main,
+      testMode: false,
+      list: [
+        { addr: main, sni: main, tag: 'DIRECT' },
+        ...ips.map((ip, i) => ({ addr: ip, sni: main, tag: `CF${i + 1}` })),
+      ],
+    };
+  }
   return {
     host: main,
     testMode: false,
     list: [
-      ...ips.map((ip, i) => ({ addr: ip, tag: `CF${i + 1}` })),
-      { addr: main, tag: 'DIRECT' },
+      ...DEFAULT_CUSTOM_DOMAINS.map((d) => ({ addr: d.host, sni: d.host, tag: d.tag })),
+      ...ips.map((ip, i) => ({
+        addr: ip,
+        sni: DEFAULT_CUSTOM_DOMAINS[i % DEFAULT_CUSTOM_DOMAINS.length].host,
+        tag: `CF${i + 1}`,
+      })),
     ],
   };
 }
 
 function linksFor(doc, user, host) {
   const k = getK();
-  const { host: sni, testMode, list } = endpoints(doc, host);
-  const frag = doc.settings[k.fragment] !== false;
-  const tlsSni = !testMode && frag ? mixedCaseHost(sni) : sni;
+  const { testMode, list } = endpoints(doc, host);
   const out = [];
   for (const ib of doc.inbounds) {
     if (!ib.enabled) continue;
     const meta = k.inboundMeta[ib.id];
     if (!meta) continue;
     const path = ib.id === k.ibA ? doc.settings[k.pathKeyA] : doc.settings[k.pathKeyB];
-    const wsPath = testMode ? `${path}?ed=2048` : path;
     for (const ep of list) {
+      const sni = ep.sni;
       const label = `BBG-${meta.protocol.toUpperCase()}${ep.tag ? `-${ep.tag}` : ''}`;
       const q = new URLSearchParams({
         ...(meta.protocol === k.protoA ? { encryption: 'none' } : {}),
         security: 'tls',
-        sni: tlsSni,
+        sni,
         fp: 'chrome',
         alpn: 'http/1.1',
         type: 'ws',
         host: sni,
-        path: wsPath,
-        ...(!testMode && frag ? { [k.fragment]: `10-30,10-15,${k.pktKind}` } : {}),
+        path: `${path}?ed=2048`,
       });
       const cred = meta.protocol === k.protoA ? user.uuid : encodeURIComponent(user.password);
       out.push({
@@ -1083,7 +1093,7 @@ function linksFor(doc, user, host) {
         transport: 'ws',
         security: 'tls',
         core: 'worker',
-        conn: { host: ep.addr, port: 443, sni, tlsSni, path, testMode },
+        conn: { host: ep.addr, port: 443, sni, tlsSni: sni, path, testMode },
         uri: `${meta.protocol}://${cred}@${ep.addr.includes(':') ? `[${ep.addr}]` : ep.addr}:443?${q}#${encodeURIComponent(label)}`,
       });
     }
@@ -1115,8 +1125,8 @@ function formatProfileA(doc, user, links) {
     [k.streamSettings]: {
       network: 'ws',
       security: 'tls',
-      [k.tlsSettings]: { serverName: l.conn.tlsSni || l.conn.sni, fingerprint: 'chrome', alpn: ['http/1.1'] },
-      [k.wsSettings]: { path: l.conn.testMode ? `${l.conn.path}?ed=2048` : l.conn.path, host: l.conn.sni, headers: { Host: l.conn.sni }, heartbeatPeriod: 15 },
+      [k.tlsSettings]: { serverName: l.conn.sni, fingerprint: 'chrome', alpn: ['http/1.1'] },
+      [k.wsSettings]: { path: `${l.conn.path}?ed=2048`, host: l.conn.sni, headers: { Host: l.conn.sni }, heartbeatPeriod: 15 },
       [k.sockopt]: { tcpNoDelay: true, tcpFastOpen: true, tcpKeepAliveIdle: 60, tcpKeepAliveInterval: 15, ...(frag ? { [k.dialerProxy]: k.fragment } : {}) },
     },
   }));
@@ -1155,10 +1165,10 @@ function formatProfileB(doc, user, links) {
     server: l.conn.host,
     server_port: 443,
     tcp_fast_open: true,
-    ...(l.protocol === k.protoB ? { password: user.password } : { uuid: user.uuid, packet_encoding: 'xudp' }),
+    ...(l.protocol === k.protoB ? { password: user.password } : { uuid: user.uuid }),
     tls: {
       enabled: true,
-      server_name: l.conn.tlsSni || l.conn.sni,
+      server_name: l.conn.sni,
       alpn: ['http/1.1'],
       [k.utls]: { enabled: true, fingerprint: 'chrome' },
       ...(frag ? { [k.fragment]: true, record_fragment: true } : {}),
@@ -1167,7 +1177,8 @@ function formatProfileB(doc, user, links) {
       type: 'ws',
       path: l.conn.path,
       headers: { Host: l.conn.sni },
-      ...(l.conn.testMode ? { [k.maxEarlyData]: 2048, [k.earlyHeaderName]: k.swpHeader } : {}),
+      [k.maxEarlyData]: 2048,
+      [k.earlyHeaderName]: k.swpHeader,
     },
   }));
   const tags = nodes.map((n) => n.tag);
@@ -1213,10 +1224,9 @@ function formatProfileC(doc, user, links) {
   const names = links.map((l, i) => `${l.label}${links.filter((x) => x.label === l.label).length > 1 ? `-${i + 1}` : ''}`);
   const lines = [...k.cHead];
   links.forEach((l, i) => {
-    const cred = l.protocol === k.protoB ? `password: ${q(user.password)}` : `uuid: ${q(user.uuid)}, packet-encoding: xudp`;
+    const cred = l.protocol === k.protoB ? `password: ${q(user.password)}` : `uuid: ${q(user.uuid)}`;
     const sniKey = l.protocol === k.protoB ? 'sni' : 'servername';
-    const edOpts = l.conn.testMode ? `, ${k.maxEarlyData.replace(/_/g, '-')}: 2048, ${k.earlyHeaderName.replace(/_/g, '-')}: ${k.swpHeader}` : '';
-    lines.push(`  - { name: ${q(names[i])}, type: ${l.protocol}, server: ${q(l.conn.host)}, port: 443, tfo: true, ${cred}, udp: true, tls: true, ${sniKey}: ${q(l.conn.tlsSni || l.conn.sni)}, alpn: [http/1.1], ${k.clientFp}: chrome, network: ws, ${k.wsOpts}: { path: ${q(l.conn.path)}, headers: { Host: ${q(l.conn.sni)} }${edOpts} } }`);
+    lines.push(`  - { name: ${q(names[i])}, type: ${l.protocol}, server: ${q(l.conn.host)}, port: 443, tfo: true, ${cred}, udp: true, tls: true, ${sniKey}: ${q(l.conn.sni)}, alpn: [http/1.1], ${k.clientFp}: chrome, network: ws, ${k.wsOpts}: { path: ${q(l.conn.path)}, headers: { Host: ${q(l.conn.sni)} }, ${k.maxEarlyData.replace(/_/g, '-')}: 2048, ${k.earlyHeaderName.replace(/_/g, '-')}: ${k.swpHeader} } }`);
   });
   if (!links.length) lines.push('  []');
   lines.push(k.cGroups);
@@ -1245,7 +1255,8 @@ function buildState(snap, host) {
   const k = getK();
   const { doc, usage, traffic } = snap;
   const s = doc.settings;
-  const origin = `https://${s.publicHost || host}`;
+  const effHost = s.publicHost || (/\.workers\.dev$/i.test(host) ? DEFAULT_CUSTOM_DOMAINS[0].host : host);
+  const origin = `https://${effHost}`;
   const users = doc.users.map((u) => {
     const use = usage[u.id] || { up: 0, down: 0, lastSeen: 0 };
     const status = userStatus(u, use);
