@@ -152,27 +152,39 @@ export async function deployPanel(input, { apiBase = 'https://api.cloudflare.com
         exists = true;
       } catch { exists = false; }
       if (exists) throw new DeployError('upload', `a Worker named ${o.name} already exists`, { fa: `یک Worker با نام ${o.name} از قبل هست. نام دیگری بدهید یا خالی بگذارید.`, en: `A Worker named ${o.name} already exists. Pick another name or leave it empty.` });
-      const isMock = !apiBase.includes('cloudflare.com');
-      const meta = {
-        main_module: 'panel.js',
-        compatibility_date: COMPAT_DATE,
-        bindings: [
-          ...(isMock ? [{ type: 'durable_object_namespace', name: 'STORE', class_name: 'PanelStore' }] : []),
-          { type: 'secret_text', name: 'ADMIN_PASSWORD', text: o.adminPassword },
-          { type: 'plain_text', name: 'ADMIN_USER', text: o.adminUser },
-          { type: 'secret_text', name: 'ADMIN_PATH', text: paths.admin },
-          { type: 'secret_text', name: 'SUB_PATH', text: paths.sub },
-          { type: 'secret_text', name: 'FIRST_SUB_TOKEN', text: paths.token },
-          ...(o.customDomain ? [{ type: 'plain_text', name: 'PUBLIC_HOST', text: o.customDomain }] : []),
-          ...(o.proxyIp ? [{ type: 'plain_text', name: 'PROXY_IP', text: o.proxyIp }] : []),
-          ...(o.cleanIps ? [{ type: 'plain_text', name: 'CLEAN_IPS', text: o.cleanIps }] : []),
-        ],
-        ...(isMock ? { migrations: { new_tag: 'v1', new_sqlite_classes: ['PanelStore'] } } : {}),
+      const baseBindings = [
+        { type: 'secret_text', name: 'ADMIN_PASSWORD', text: o.adminPassword },
+        { type: 'plain_text', name: 'ADMIN_USER', text: o.adminUser },
+        { type: 'secret_text', name: 'ADMIN_PATH', text: paths.admin },
+        { type: 'secret_text', name: 'SUB_PATH', text: paths.sub },
+        { type: 'secret_text', name: 'FIRST_SUB_TOKEN', text: paths.token },
+        ...(o.customDomain ? [{ type: 'plain_text', name: 'PUBLIC_HOST', text: o.customDomain }] : []),
+        ...(o.proxyIp ? [{ type: 'plain_text', name: 'PROXY_IP', text: o.proxyIp }] : []),
+        ...(o.cleanIps ? [{ type: 'plain_text', name: 'CLEAN_IPS', text: o.cleanIps }] : []),
+      ];
+      const uploadWithMeta = async (metaObj) => {
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metaObj)], { type: 'application/json' }));
+        for (const m of PANEL_MODULES) form.append(m.name, new Blob([m.content], { type: 'application/javascript+module' }), m.name);
+        await cf('PUT', `/accounts/${account.id}/workers/scripts/${o.name}`, form, true);
       };
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify(meta)], { type: 'application/json' }));
-      for (const m of PANEL_MODULES) form.append(m.name, new Blob([m.content], { type: 'application/javascript+module' }), m.name);
-      await cf('PUT', `/accounts/${account.id}/workers/scripts/${o.name}`, form, true);
+      try {
+        await uploadWithMeta({
+          main_module: 'panel.js',
+          compatibility_date: COMPAT_DATE,
+          bindings: [
+            { type: 'durable_object_namespace', name: 'STORE', class_name: 'PanelStore' },
+            ...baseBindings,
+          ],
+          migrations: { new_tag: 'v1', new_sqlite_classes: ['PanelStore'] },
+        });
+      } catch {
+        await uploadWithMeta({
+          main_module: 'panel.js',
+          compatibility_date: COMPAT_DATE,
+          bindings: baseBindings,
+        });
+      }
       return { note: `${o.name} · v${PANEL_VERSION}` };
     });
 

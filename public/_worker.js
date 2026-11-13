@@ -338,6 +338,7 @@ class PanelStore {
     this.env = env;
     this.doc = null;
     this.attempts = new Map();
+    this.sessions = new Map();
     this.lastFlush = 0;
     this.dirtyUsage = false;
     this._init = null;
@@ -373,6 +374,10 @@ class PanelStore {
   }
 
   async fetch(request) {
+    const xhMode = request.headers.get('x-bbg-xh');
+    if (xhMode) {
+      return handleXhttpOnMap(this.sessions, this.env, this.ctx, request, xhMode);
+    }
     try {
       const { m, a = [] } = await request.json();
       const res = await this[m](...a);
@@ -906,13 +911,8 @@ async function serveHttpFallback(ws, head, chunks, sendReply) {
   return true;
 }
 
-function openChannel(request, env, ctx, kind, cache) {
+function createTunnelSession(env, ctx, kind, cache, sink) {
   const k = getK();
-  const PairCtor = globalThis[k.wsPair];
-  const pair = new PairCtor();
-  const [client, ws] = Object.values(pair);
-  ws[k.accept]();
-
   let userId = '';
   let remote = null;
   let writer = null;
@@ -947,14 +947,14 @@ function openChannel(request, env, ctx, kind, cache) {
     closed = true;
     earlyChunks.length = 0;
     clearInterval(flushTimer);
-    try { ws.close(code); } catch { /* ignore */ }
+    try { sink.close(code); } catch { /* ignore */ }
     try { remote?.close(); } catch { /* ignore */ }
     const p = report(true);
-    try { ctx.waitUntil(p); } catch { /* ignore */ }
+    try { ctx?.waitUntil?.(p); } catch { /* ignore */ }
   };
 
   let headerSentGlobal = false;
-  const sendDownChunk = (value, reply) => {
+  const sendDownChunk = async (value, reply) => {
     if (!gotAny) {
       gotAny = true;
       earlyChunks.length = 0;
@@ -964,11 +964,11 @@ function openChannel(request, env, ctx, kind, cache) {
       const out = new Uint8Array(reply.length + value.byteLength);
       out.set(reply);
       out.set(value, reply.length);
-      ws.send(out);
       headerSentGlobal = true;
+      await sink.send(out);
     } else {
       headerSentGlobal = true;
-      ws.send(value);
+      await sink.send(value);
     }
   };
 
@@ -998,7 +998,7 @@ function openChannel(request, env, ctx, kind, cache) {
         if (done) break;
         if (!value || !value.byteLength) continue;
         got += value.byteLength;
-        sendDownChunk(value, reply);
+        await sendDownChunk(value, reply);
       }
     } catch { /* remote closed or timed out */ }
     return { got, headerSent: headerSentGlobal };
@@ -1026,8 +1026,12 @@ function openChannel(request, env, ctx, kind, cache) {
     userId = head.userId;
     first = head;
     up += head.rest.byteLength;
+    if (sink.eagerReply && head.reply && !headerSentGlobal) {
+      headerSentGlobal = true;
+      try { await sink.send(head.reply); } catch { close(); return; }
+    }
     if (head.udp) {
-      udpSend = relayPacket(ws, head.reply, (n) => { down += n; });
+      udpSend = relayPacket(sink, headerSentGlobal ? null : head.reply, (n) => { down += n; });
       if (head.rest.byteLength) await udpSend(head.rest);
       return;
     }
@@ -1039,7 +1043,7 @@ function openChannel(request, env, ctx, kind, cache) {
         try {
           remote = await dialUpstream('8.8.4.4', 53, 2000);
         } catch {
-          udpSend = relayPacket(ws, head.reply, (n) => { down += n; });
+          udpSend = relayPacket(sink, headerSentGlobal ? null : head.reply, (n) => { down += n; });
           if (head.rest.byteLength) await udpSend(head.rest);
           return;
         }
@@ -1051,7 +1055,7 @@ function openChannel(request, env, ctx, kind, cache) {
       writer = remote[k.writable].getWriter();
       if (head.rest.byteLength) await writer.write(head.rest);
       flushTimer = setInterval(() => { report(false); }, FLUSH_MS);
-      pump(remote, head.reply, 2500).then(() => close()).catch(() => close());
+      pump(remote, headerSentGlobal ? null : head.reply, 2500).then(() => close()).catch(() => close());
       return;
     }
     if (head.rest.byteLength) {
@@ -1060,12 +1064,12 @@ function openChannel(request, env, ctx, kind, cache) {
     }
     const isHttpPort = CF_HTTP_PORTS.has(Number(head.port));
     if (isHttpPort && isCloudflareTarget(head.host) && !isTestHost(head.host)) {
-      if (earlyChunks.length && await serveHttpFallback(ws, head, earlyChunks, (b) => sendDownChunk(b, head.reply))) {
+      if (earlyChunks.length && await serveHttpFallback(sink, head, earlyChunks, (b) => sendDownChunk(b, head.reply))) {
         close();
         return;
       }
     }
-    const relays = relayCandidates(cache.data[k.relayKey], head.host, head.port);
+    const relays = relayCandidates(cache.data?.[k.relayKey], head.host, head.port);
     let relayIdx = 0;
     if (isCloudflareTarget(head.host) && relays.length) {
       retried = true;
@@ -1078,7 +1082,7 @@ function openChannel(request, env, ctx, kind, cache) {
       } catch (err) {
         if (isHttpPort && !isTestHost(head.host) && earlyChunks.length) {
           try {
-            if (await serveHttpFallback(ws, head, earlyChunks, (b) => sendDownChunk(b, head.reply))) {
+            if (await serveHttpFallback(sink, head, earlyChunks, (b) => sendDownChunk(b, head.reply))) {
               close();
               return;
             }
@@ -1103,11 +1107,11 @@ function openChannel(request, env, ctx, kind, cache) {
     }
     flushTimer = setInterval(() => { report(false); }, FLUSH_MS);
     const fbTimeout = relays.length && !isTestHost(head.host) ? 3000 : 0;
-    pump(remote, head.reply, fbTimeout).then(async ({ got }) => {
+    pump(remote, headerSentGlobal ? null : head.reply, fbTimeout).then(async ({ got }) => {
       let curGot = got;
       if (curGot === 0 && isHttpPort && !isTestHost(head.host) && earlyChunks.length && !closed) {
         try {
-          if (await serveHttpFallback(ws, head, earlyChunks, (b) => sendDownChunk(b, head.reply))) {
+          if (await serveHttpFallback(sink, head, earlyChunks, (b) => sendDownChunk(b, head.reply))) {
             close();
             return;
           }
@@ -1155,24 +1159,235 @@ function openChannel(request, env, ctx, kind, cache) {
       }
       if (writer) await writer.write(chunk);
     }).catch(() => close(1011));
+    try { ctx?.waitUntil?.(chain); } catch { /* ignore */ }
+    return chain;
   };
+
+  return { onChunk, close };
+}
+
+function openChannel(request, env, ctx, kind, cache) {
+  const k = getK();
+  const PairCtor = globalThis[k.wsPair];
+  const pair = new PairCtor();
+  const [client, ws] = Object.values(pair);
+  ws[k.accept]();
+
+  const session = createTunnelSession(env, ctx, kind, cache, {
+    eagerReply: false,
+    send: (b) => ws.send(b),
+    close: (code = 1000) => { try { ws.close(code); } catch { /* ignore */ } },
+  });
 
   const early = request.headers.get(k.swpLower);
   if (early) {
     try {
       const bytes = fromB64(early.split(',')[0].trim());
-      if (bytes.byteLength) onChunk(bytes);
+      if (bytes.byteLength) session.onChunk(bytes);
     } catch { /* ignore */ }
   }
-  ws.addEventListener('message', (ev) => onChunk(typeof ev.data === 'string' ? enc.encode(ev.data) : ev.data));
-  ws.addEventListener('close', () => close());
-  ws.addEventListener('error', () => close());
+  ws.addEventListener('message', (ev) => session.onChunk(typeof ev.data === 'string' ? enc.encode(ev.data) : ev.data));
+  ws.addEventListener('close', () => session.close());
+  ws.addEventListener('error', () => session.close());
 
   const headers = early ? { [k.swpHeader]: early.split(',')[0].trim() } : {};
   return new Response(null, { status: k.wsStatus, [k.wsProp]: client, headers });
 }
 
-function relayPacket(ws, reply, count) {
+function xhttpDownHeaders() {
+  return {
+    'content-type': 'application/octet-stream',
+    'cache-control': 'no-store, no-transform',
+    'x-accel-buffering': 'no',
+    'x-padding': 'X'.repeat(24),
+  };
+}
+
+const LOCAL_XHTTP_SESSIONS = new Map();
+
+async function handleXhttpOnMap(sessionsMap, env, ctx, request, mode) {
+  const k = getK();
+  const sid = request.headers.get('x-bbg-sid') || '';
+  const kind = request.headers.get('x-bbg-kind') || k.protoA;
+  if (!sid) return notFound();
+  let sess = sessionsMap.get(sid);
+  if (sess && sess.closed) {
+    if (mode === 'get') return notFound();
+    return new Response(null, { status: 200, headers: { 'cache-control': 'no-store', 'x-padding': 'X'.repeat(16) } });
+  }
+  if (!sess) {
+    let cacheObj = null;
+    const cfgRaw = request.headers.get('x-bbg-cfg');
+    if (cfgRaw) {
+      try {
+        const parsed = JSON.parse(cfgRaw);
+        cacheObj = {
+          a: new Map(parsed.a || []),
+          b: new Map(parsed.b || []),
+          data: { [k.relayKey]: parsed.relay || '' },
+        };
+      } catch { /* fallback to activeSet */ }
+    }
+    if (!cacheObj) {
+      cacheObj = await activeSet(env);
+    }
+    const { readable, writable } = new TransformStream();
+    const downWriter = writable.getWriter();
+    const cleanup = () => {
+      if (sess.closed) return;
+      sess.closed = true;
+      clearTimeout(sess.timer);
+      sess.pending.clear();
+      try { downWriter.close(); } catch { /* ignore */ }
+      setTimeout(() => {
+        if (sessionsMap.get(sid) === sess) sessionsMap.delete(sid);
+      }, 15_000);
+    };
+    const touch = () => {
+      if (sess.closed) return;
+      clearTimeout(sess.timer);
+      sess.timer = setTimeout(() => sess.tunnel.close(), 90_000);
+    };
+    sess = {
+      sid,
+      closed: false,
+      readable,
+      downWriter,
+      nextSeq: 0,
+      pending: new Map(),
+      timer: null,
+      tunnel: null,
+      touch,
+    };
+    sess.tunnel = createTunnelSession(env, ctx, kind, cacheObj, {
+      eagerReply: true,
+      send: async (b) => {
+        touch();
+        await downWriter.write(b);
+      },
+      close: () => cleanup(),
+    });
+    touch();
+    sessionsMap.set(sid, sess);
+  }
+  if (mode === 'get') {
+    sess.touch();
+    try {
+      request.signal?.addEventListener?.('abort', () => sess.tunnel.close(), { once: true });
+    } catch { /* ignore */ }
+    return new Response(sess.readable, { status: 200, headers: xhttpDownHeaders() });
+  }
+  if (mode === 'pkt') {
+    const seq = Number(request.headers.get('x-bbg-seq') || 0);
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (sess.closed) {
+      return new Response(null, { status: 200, headers: { 'cache-control': 'no-store', 'x-padding': 'X'.repeat(16) } });
+    }
+    sess.touch();
+    if (bytes.byteLength > 0 && seq >= sess.nextSeq && sess.pending.size < 64) {
+      sess.pending.set(seq, bytes);
+      while (sess.pending.has(sess.nextSeq)) {
+        const chunk = sess.pending.get(sess.nextSeq);
+        sess.pending.delete(sess.nextSeq);
+        sess.nextSeq += 1;
+        sess.tunnel.onChunk(chunk);
+      }
+    }
+    return new Response(null, { status: 200, headers: { 'cache-control': 'no-store', 'x-padding': 'X'.repeat(16) } });
+  }
+  if (mode === 'stream' && request.body) {
+    sess.touch();
+    const pumpUp = (async () => {
+      try {
+        const reader = request.body.getReader();
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value && value.byteLength) {
+            sess.touch();
+            await sess.tunnel.onChunk(value);
+          }
+        }
+      } catch { /* ignore */ }
+    })();
+    try { ctx?.waitUntil?.(pumpUp); } catch { /* ignore */ }
+    return new Response(null, { status: 200, headers: { 'cache-control': 'no-store', 'x-padding': 'X'.repeat(16) } });
+  }
+  return notFound();
+}
+
+async function handleXhttpEdge(request, env, ctx, kind, basePath, path, cache) {
+  const k = getK();
+  const sub = path.slice(basePath.length).replace(/^\/+|\/+$/g, '');
+  const method = request.method.toUpperCase();
+  if (!sub) {
+    if (method !== 'POST' || !request.body) return notFound();
+    const { readable, writable } = new TransformStream();
+    const downWriter = writable.getWriter();
+    const tunnel = createTunnelSession(env, ctx, kind, cache, {
+      eagerReply: true,
+      send: (b) => downWriter.write(b),
+      close: () => { try { downWriter.close(); } catch { /* ignore */ } },
+    });
+    const pumpUp = (async () => {
+      try {
+        const reader = request.body.getReader();
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value && value.byteLength) await tunnel.onChunk(value);
+        }
+      } catch {
+        tunnel.close();
+      }
+    })();
+    try { ctx?.waitUntil?.(pumpUp); } catch { /* ignore */ }
+    return new Response(readable, { status: 200, headers: xhttpDownHeaders() });
+  }
+  const parts = sub.split('/');
+  const sid = parts[0] || '';
+  const seqStr = parts.length > 1 ? parts[1] : '';
+  if (sid.length < 2 || sid.length > 64 || parts.length > 2) return notFound();
+  let mode = '';
+  if (method === 'GET' && !seqStr) mode = 'get';
+  else if (method === 'POST' && /^\d+$/.test(seqStr)) mode = 'pkt';
+  else if (method === 'POST' && !seqStr) mode = 'stream';
+  else return notFound();
+
+  const headers = new Headers();
+  headers.set('x-bbg-xh', mode);
+  headers.set('x-bbg-sid', sid);
+  headers.set('x-bbg-kind', kind);
+  if (mode === 'pkt') headers.set('x-bbg-seq', seqStr);
+  if (mode === 'get' || (mode === 'pkt' && seqStr === '0') || mode === 'stream') {
+    headers.set('x-bbg-cfg', JSON.stringify({
+      a: [...cache.a],
+      b: [...cache.b],
+      relay: cache.data?.[k.relayKey] || '',
+    }));
+  }
+  if (env && env.STORE && typeof env.STORE.idFromName === 'function') {
+    let h = 0;
+    for (let i = 0; i < sid.length; i += 1) h = (h * 31 + sid.charCodeAt(i)) | 0;
+    const shard = `xhttp-${Math.abs(h) & 7}`;
+    const stub = env.STORE.get(env.STORE.idFromName(shard));
+    if (typeof stub.fetch === 'function') {
+      return stub.fetch('https://do.internal/xhttp', {
+        method,
+        headers,
+        body: method === 'POST' ? request.body : undefined,
+      });
+    }
+  }
+  const localReq = new Request('https://do.internal/xhttp', {
+    method,
+    headers,
+    body: method === 'POST' ? request.body : undefined,
+  });
+  return handleXhttpOnMap(LOCAL_XHTTP_SESSIONS, env, ctx, localReq, mode);
+}
+
+function relayPacket(sink, reply, count) {
   const k = getK();
   let headerSent = false;
   let buf = new Uint8Array(0);
@@ -1206,7 +1421,7 @@ function relayPacket(ws, reply, count) {
       out.set(ans, pre.length + 2);
       headerSent = true;
       count(out.length);
-      try { ws.send(out); } catch { /* closed */ }
+      try { await sink.send(out); } catch { /* closed */ }
     }
   };
 }
@@ -1260,44 +1475,106 @@ function endpoints(doc, host) {
   };
 }
 
+const XHTTP_EXTRA = {
+  scMaxEachPostBytes: 850,
+  scMinPostsIntervalMs: 5,
+  xPaddingBytes: '10-20',
+  xmux: { hMaxRequestTimes: 2, maxConnections: 16 },
+};
+
 function linksFor(doc, user, host) {
   const k = getK();
   const { testMode, list } = endpoints(doc, host);
   const out = [];
+  const wsOut = [];
+  const xExtraStr = JSON.stringify(XHTTP_EXTRA);
   for (const ib of doc.inbounds) {
     if (!ib.enabled) continue;
     const meta = k.inboundMeta[ib.id];
     if (!meta) continue;
     const path = ib.id === k.ibA ? doc.settings[k.pathKeyA] : doc.settings[k.pathKeyB];
+    const cred = meta.protocol === k.protoA ? user.uuid : encodeURIComponent(user.password);
     for (const ep of list) {
       const sni = ep.sni;
-      const label = `BBG-${meta.protocol.toUpperCase()}${ep.tag ? `-${ep.tag}` : ''}`;
-      const q = new URLSearchParams({
+      const addrStr = ep.addr.includes(':') ? `[${ep.addr}]` : ep.addr;
+      if (testMode) {
+        const label = `BBG-${meta.protocol.toUpperCase()}${ep.tag ? `-${ep.tag}` : ''}`;
+        const q = new URLSearchParams({
+          ...(meta.protocol === k.protoA ? { encryption: 'none' } : {}),
+          security: 'tls',
+          sni,
+          fp: 'chrome',
+          alpn: 'http/1.1',
+          type: 'ws',
+          host: sni,
+          path: `${path}?ed=2048`,
+        });
+        out.push({
+          id: `${ib.id}${ep.tag ? `-${ep.tag}` : ''}`,
+          inboundId: ib.id,
+          label,
+          short: `${meta.protocol.toUpperCase()} · WS${ep.tag ? ` · ${ep.tag}` : ''}`,
+          protocol: meta.protocol,
+          transport: 'ws',
+          security: 'tls',
+          core: 'worker',
+          conn: { host: ep.addr, port: 443, sni, tlsSni: sni, path, testMode },
+          uri: `${meta.protocol}://${cred}@${addrStr}:443?${q}#${encodeURIComponent(label)}`,
+        });
+        continue;
+      }
+      const xLabel = `BBG-${meta.protocol.toUpperCase()}-XHTTP${ep.tag ? `-${ep.tag}` : ''}`;
+      const qx = new URLSearchParams({
         ...(meta.protocol === k.protoA ? { encryption: 'none' } : {}),
         security: 'tls',
         sni,
-        fp: 'chrome',
+        fp: 'android',
+        alpn: 'http/1.1',
+        type: 'xhttp',
+        host: sni,
+        path,
+        mode: 'packet-up',
+        extra: xExtraStr,
+      });
+      out.push({
+        id: `${ib.id}-xhttp${ep.tag ? `-${ep.tag}` : ''}`,
+        inboundId: ib.id,
+        label: xLabel,
+        short: `${meta.protocol.toUpperCase()} · XHTTP${ep.tag ? ` · ${ep.tag}` : ''}`,
+        protocol: meta.protocol,
+        transport: 'xhttp',
+        security: 'tls',
+        core: 'worker',
+        conn: { host: ep.addr, port: 443, sni, tlsSni: sni, path, testMode },
+        uri: `${meta.protocol}://${cred}@${addrStr}:443?${qx}#${encodeURIComponent(xLabel)}`,
+      });
+
+      const wLabel = `BBG-${meta.protocol.toUpperCase()}-WS${ep.tag ? `-${ep.tag}` : ''}`;
+      const qw = new URLSearchParams({
+        ...(meta.protocol === k.protoA ? { encryption: 'none' } : {}),
+        security: 'tls',
+        sni,
+        fp: 'android',
         alpn: 'http/1.1',
         type: 'ws',
         host: sni,
-        path: `${path}?ed=2048`,
+        path,
       });
-      const cred = meta.protocol === k.protoA ? user.uuid : encodeURIComponent(user.password);
-      out.push({
+      wsOut.push({
         id: `${ib.id}${ep.tag ? `-${ep.tag}` : ''}`,
         inboundId: ib.id,
-        label,
+        label: wLabel,
         short: `${meta.protocol.toUpperCase()} · WS${ep.tag ? ` · ${ep.tag}` : ''}`,
         protocol: meta.protocol,
         transport: 'ws',
         security: 'tls',
         core: 'worker',
         conn: { host: ep.addr, port: 443, sni, tlsSni: sni, path, testMode },
-        uri: `${meta.protocol}://${cred}@${ep.addr.includes(':') ? `[${ep.addr}]` : ep.addr}:443?${q}#${encodeURIComponent(label)}`,
+        uri: `${meta.protocol}://${cred}@${addrStr}:443?${qw}#${encodeURIComponent(wLabel)}`,
       });
     }
   }
-  return out;
+  return [...out, ...wsOut];
 }
 
 function subHeaders(doc, user, usage) {
@@ -1315,20 +1592,27 @@ function subHeaders(doc, user, usage) {
 function formatProfileA(doc, user, links) {
   const k = getK();
   const frag = doc.settings[k.fragment] !== false;
-  const outs = links.map((l, i) => ({
-    tag: i === 0 ? 'proxy' : `proxy-${i + 1}`,
-    protocol: l.protocol,
-    settings: l.protocol === k.protoB
-      ? { servers: [{ address: l.conn.host, port: 443, password: user.password }] }
-      : { [k.peerNodes]: [{ address: l.conn.host, port: 443, users: [{ id: user.uuid, encryption: 'none' }] }] },
-    [k.streamSettings]: {
-      network: 'ws',
-      security: 'tls',
-      [k.tlsSettings]: { serverName: l.conn.sni, fingerprint: 'chrome', alpn: ['http/1.1'] },
-      [k.wsSettings]: { path: `${l.conn.path}?ed=2048`, host: l.conn.sni, headers: { Host: l.conn.sni }, heartbeatPeriod: 15 },
-      [k.sockopt]: { tcpNoDelay: true, tcpFastOpen: true, tcpKeepAliveIdle: 60, tcpKeepAliveInterval: 15, ...(frag ? { [k.dialerProxy]: k.fragment } : {}) },
-    },
-  }));
+  const outs = links.map((l, i) => {
+    const isXhttp = l.transport === 'xhttp';
+    const fp = l.conn.testMode ? 'chrome' : 'android';
+    const wsPath = l.conn.testMode ? `${l.conn.path}?ed=2048` : l.conn.path;
+    return {
+      tag: i === 0 ? 'proxy' : `proxy-${i + 1}`,
+      protocol: l.protocol,
+      settings: l.protocol === k.protoB
+        ? { servers: [{ address: l.conn.host, port: 443, password: user.password }] }
+        : { [k.peerNodes]: [{ address: l.conn.host, port: 443, users: [{ id: user.uuid, encryption: 'none' }] }] },
+      [k.streamSettings]: {
+        network: isXhttp ? 'xhttp' : 'ws',
+        security: 'tls',
+        [k.tlsSettings]: { serverName: l.conn.sni, fingerprint: fp, alpn: ['http/1.1'] },
+        ...(isXhttp
+          ? { xhttpSettings: { host: l.conn.sni, path: l.conn.path, mode: 'packet-up', extra: XHTTP_EXTRA } }
+          : { [k.wsSettings]: { path: wsPath, host: l.conn.sni, headers: { Host: l.conn.sni }, heartbeatPeriod: 15 } }),
+        [k.sockopt]: { tcpNoDelay: true, tcpFastOpen: true, tcpKeepAliveIdle: 60, tcpKeepAliveInterval: 15, ...(frag && !isXhttp ? { [k.dialerProxy]: k.fragment } : {}) },
+      },
+    };
+  });
   return {
     remarks: `BBG · ${user.name}`,
     log: { loglevel: 'warning' },
@@ -1358,9 +1642,11 @@ function formatProfileA(doc, user, links) {
 function formatProfileB(doc, user, links) {
   const k = getK();
   const frag = doc.settings[k.fragment] !== false;
-  const nodes = links.map((l, i) => ({
+  const wsOnly = links.filter((l) => l.transport === 'ws');
+  const effLinks = wsOnly.length ? wsOnly : links;
+  const nodes = effLinks.map((l, i) => ({
     type: l.protocol,
-    tag: `${l.label}${links.filter((x) => x.label === l.label).length > 1 ? `-${i + 1}` : ''}`,
+    tag: `${l.label}${effLinks.filter((x) => x.label === l.label).length > 1 ? `-${i + 1}` : ''}`,
     server: l.conn.host,
     server_port: 443,
     tcp_fast_open: true,
@@ -1369,15 +1655,14 @@ function formatProfileB(doc, user, links) {
       enabled: true,
       server_name: l.conn.sni,
       alpn: ['http/1.1'],
-      [k.utls]: { enabled: true, fingerprint: 'chrome' },
+      [k.utls]: { enabled: true, fingerprint: l.conn.testMode ? 'chrome' : 'android' },
       ...(frag ? { [k.fragment]: true, record_fragment: true } : {}),
     },
     transport: {
       type: 'ws',
       path: l.conn.path,
       headers: { Host: l.conn.sni },
-      [k.maxEarlyData]: 2048,
-      [k.earlyHeaderName]: k.swpHeader,
+      ...(l.conn.testMode ? { [k.maxEarlyData]: 2048, [k.earlyHeaderName]: k.swpHeader } : {}),
     },
   }));
   const tags = nodes.map((n) => n.tag);
@@ -1420,14 +1705,18 @@ function formatProfileB(doc, user, links) {
 function formatProfileC(doc, user, links) {
   const k = getK();
   const q = (s) => JSON.stringify(String(s));
-  const names = links.map((l, i) => `${l.label}${links.filter((x) => x.label === l.label).length > 1 ? `-${i + 1}` : ''}`);
+  const wsOnly = links.filter((l) => l.transport === 'ws');
+  const effLinks = wsOnly.length ? wsOnly : links;
+  const names = effLinks.map((l, i) => `${l.label}${effLinks.filter((x) => x.label === l.label).length > 1 ? `-${i + 1}` : ''}`);
   const lines = [...k.cHead];
-  links.forEach((l, i) => {
+  effLinks.forEach((l, i) => {
     const cred = l.protocol === k.protoB ? `password: ${q(user.password)}` : `uuid: ${q(user.uuid)}`;
     const sniKey = l.protocol === k.protoB ? 'sni' : 'servername';
-    lines.push(`  - { name: ${q(names[i])}, type: ${l.protocol}, server: ${q(l.conn.host)}, port: 443, tfo: true, ${cred}, udp: true, tls: true, ${sniKey}: ${q(l.conn.sni)}, alpn: [http/1.1], ${k.clientFp}: chrome, network: ws, ${k.wsOpts}: { path: ${q(l.conn.path)}, headers: { Host: ${q(l.conn.sni)} }, ${k.maxEarlyData.replace(/_/g, '-')}: 2048, ${k.earlyHeaderName.replace(/_/g, '-')}: ${k.swpHeader} } }`);
+    const fp = l.conn.testMode ? 'chrome' : 'android';
+    const edOpts = l.conn.testMode ? `, ${k.maxEarlyData.replace(/_/g, '-')}: 2048, ${k.earlyHeaderName.replace(/_/g, '-')}: ${k.swpHeader}` : '';
+    lines.push(`  - { name: ${q(names[i])}, type: ${l.protocol}, server: ${q(l.conn.host)}, port: 443, tfo: true, ${cred}, udp: true, tls: true, ${sniKey}: ${q(l.conn.sni)}, alpn: [http/1.1], ${k.clientFp}: ${fp}, network: ws, ${k.wsOpts}: { path: ${q(l.conn.path)}, headers: { Host: ${q(l.conn.sni)} }${edOpts} } }`);
   });
-  if (!links.length) lines.push('  []');
+  if (!effLinks.length) lines.push('  []');
   lines.push(k.cGroups);
   lines.push(`  - { name: "BBG", type: select, proxies: [${['"AUTO"', ...names.map(q), '"DIRECT"'].join(', ')}] }`);
   lines.push(`  - { name: "AUTO", type: url-test, proxies: [${names.map(q).join(', ') || '"DIRECT"'}], url: "${k.gen204}", interval: 60, tolerance: 30 }`);
@@ -1834,6 +2123,13 @@ async function handle(request, env, ctx) {
     if (paths[k.protoA] && path === paths[k.protoA]) return openChannel(request, env, ctx, k.protoA, cache);
     if (paths[k.protoB] && path === paths[k.protoB]) return openChannel(request, env, ctx, k.protoB, cache);
     return notFound();
+  }
+
+  if (paths[k.protoA] && (path === paths[k.protoA] || path.startsWith(`${paths[k.protoA]}/`))) {
+    return handleXhttpEdge(request, env, ctx, k.protoA, paths[k.protoA], path, cache);
+  }
+  if (paths[k.protoB] && (path === paths[k.protoB] || path.startsWith(`${paths[k.protoB]}/`))) {
+    return handleXhttpEdge(request, env, ctx, k.protoB, paths[k.protoB], path, cache);
   }
 
   if (path === paths.admin) return Response.redirect(`${url.origin}${paths.admin}/`, 302);
