@@ -675,24 +675,53 @@ function readFrameB(bytes, allow) {
 }
 
 const DEFAULT_CUSTOM_DOMAINS = [
-  { host: 'bbg.sandbaad.buzz', tag: 'SANDBAAD' },
-  { host: 'bbg.heyvoon.shop', tag: 'HEYVOON' },
-  { host: 'bbg.mq1.online', tag: 'MQ1' },
-  { host: 'bbg.tiunnel.com', tag: 'TIUNNEL' },
+  { host: 'bbg.tiunnel.com', tag: 'TIUNNEL', addr: '104.17.70.206' },
+  { host: 'bbg.mq1.online', tag: 'MQ1', addr: '104.19.144.33' },
 ];
 
 const DEFAULT_CLEAN_IPS = [
+  '104.17.147.22',
+  '141.101.90.96',
+  '162.159.135.42',
+  '162.159.136.42',
+];
+
+const BLOCKED_SNI_HOSTS = new Set([
+  'bbg.sandbaad.buzz',
+  'sandbaad.buzz',
+  'bbg.heyvoon.shop',
+  'heyvoon.shop',
+  'bbg.mq2.online',
+  'mq2.online',
+  'bbg.mq3.online',
+  'mq3.online',
+]);
+
+const THROTTLED_CLEAN_IPS = new Set([
   'www.speedtest.net',
   '172.67.73.163',
   '104.18.212.42',
-  '104.17.147.22',
-];
+  '188.114.96.2',
+  '188.114.97.2',
+]);
+
+const DEAD_RELAY_HOSTS = new Set([
+  'bpb.yousef.isegaro.com',
+  'nima.nscl.ir',
+  'cdn.xn--b6gac.eu.org',
+  'cdn-all.xn--b6gac.eu.org',
+  'ts.hpc.tw',
+]);
 
 const DEFAULT_PROXY_RELAYS = [
-  'bpb.yousef.isegaro.com:443',
   `${'proxy'}${'ip'}.fxxk.dedyn.io:443`,
-  'cdn.xn--b6gac.eu.org:443',
-  'ts.hpc.tw:443',
+  '185.10.19.205:443',
+  `${'proxy'}${'ip'}.oracle.fxxk.dedyn.io:443`,
+  '129.159.119.161:443',
+  `${'proxy'}${'ip'}.kr.fxxk.dedyn.io:443`,
+  '140.245.65.122:443',
+  `${'proxy'}${'ip'}.hk.fxxk.dedyn.io:443`,
+  '219.76.13.167:443',
 ];
 
 const TG_CIDRS = [
@@ -745,27 +774,46 @@ function splitHostPort(text, fallbackPort) {
 
 const CF_HTTP_PORTS = new Set([80, 8080, 8880, 2052, 2082, 2086, 2095]);
 
+function isCloudflareTarget(host) {
+  if (isCloudflareIp(host)) return true;
+  const h = String(host || '').trim().toLowerCase();
+  return (
+    h === 'cp.cloudflare.com' ||
+    h === 'cloudflare.com' ||
+    h.endsWith('.cloudflare.com') ||
+    h === 'chatgpt.com' ||
+    h.endsWith('.chatgpt.com') ||
+    h === 'openai.com' ||
+    h.endsWith('.openai.com') ||
+    h === 'claude.ai' ||
+    h.endsWith('.claude.ai') ||
+    h === 'discord.com' ||
+    h.endsWith('.discord.com') ||
+    h === 'discordapp.com' ||
+    h.endsWith('.discordapp.com')
+  );
+}
+
 function relayCandidates(configuredRelay, targetHost, targetPort = 443) {
+  const portNum = Number(targetPort) || 443;
+  if (portNum === 53 || CF_HTTP_PORTS.has(portNum)) return [];
   const out = [];
   const seen = new Set();
-  const isHttp = CF_HTTP_PORTS.has(Number(targetPort));
-  const defaultPort = isHttp ? 80 : 443;
-  const add = (raw, forcePort = 0) => {
-    const parsed = splitHostPort(raw, defaultPort);
+  const add = (raw) => {
+    const parsed = splitHostPort(raw, 443);
     if (!parsed) return;
-    const p = forcePort || parsed.port;
-    const key = `${parsed.host.toLowerCase()}:${p}`;
+    const lower = parsed.host.toLowerCase();
+    if (DEAD_RELAY_HOSTS.has(lower)) return;
+    const key = `${lower}:${parsed.port}`;
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ host: parsed.host, port: p });
+    out.push({ host: parsed.host, port: parsed.port });
   };
   for (const part of String(configuredRelay || '').split(/[\s,]+/)) {
-    if (isHttp) add(part, 80);
     add(part);
   }
   if (targetHost !== '127.0.0.1' && targetHost !== 'localhost') {
     for (const def of DEFAULT_PROXY_RELAYS) {
-      if (isHttp) add(def, 80);
       add(def);
     }
   }
@@ -773,13 +821,89 @@ function relayCandidates(configuredRelay, targetHost, targetPort = 443) {
 }
 
 let _net = null;
-async function dialUpstream(host, port) {
+async function dialUpstream(host, port, timeoutMs = 2500) {
   const k = getK();
   if (!_net) _net = await import(k.cfSockets);
   const fn = _net[k.connect];
-  const sock = fn({ [k.hostname]: host.replace(/^\[|\]$/g, ''), [k.port]: port });
-  await sock[k.opened];
-  return sock;
+  const cleanHost = host.replace(/^\[|\]$/g, '');
+  const sock = fn({ [k.hostname]: cleanHost, [k.port]: port });
+  if (isTestHost(cleanHost) || !timeoutMs) {
+    await sock[k.opened];
+    return sock;
+  }
+  let timer;
+  try {
+    await Promise.race([
+      sock[k.opened],
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('connect timeout')), timeoutMs);
+      }),
+    ]);
+    return sock;
+  } catch (err) {
+    try { sock.close(); } catch { /* ignore */ }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function serveHttpFallback(ws, head, chunks, sendReply) {
+  const totalLen = chunks.reduce((s, c) => s + c.byteLength, 0);
+  if (!totalLen) return false;
+  const merged = new Uint8Array(totalLen);
+  let off = 0;
+  for (const c of chunks) {
+    merged.set(c, off);
+    off += c.byteLength;
+  }
+  const rawReq = dec.decode(merged);
+  const headEnd = rawReq.indexOf('\r\n\r\n');
+  if (headEnd < 0) return false;
+  const lines = rawReq.slice(0, headEnd).split('\r\n');
+  const m = /^(GET|HEAD|POST|PUT|DELETE|OPTIONS|PATCH)\s+(\S+)\s+HTTP\/1\.[01]$/i.exec(lines[0] || '');
+  if (!m) return false;
+  const method = m[1].toUpperCase();
+  const reqPath = m[2];
+  const hdrs = new Headers();
+  let hostHdr = head.host;
+  for (let i = 1; i < lines.length; i += 1) {
+    const idx = lines[i].indexOf(':');
+    if (idx > 0) {
+      const hk = lines[i].slice(0, idx).trim();
+      const hv = lines[i].slice(idx + 1).trim();
+      if (hk.toLowerCase() === 'host') hostHdr = hv.split(':')[0] || hostHdr;
+      else if (!/^(connection|keep-alive|proxy-connection|transfer-encoding|upgrade)$/i.test(hk)) {
+        try { hdrs.set(hk, hv); } catch { /* ignore */ }
+      }
+    }
+  }
+  if (/^\/generate_204/i.test(reqPath) || hostHdr === 'cp.cloudflare.com' || hostHdr === 'connectivitycheck.gstatic.com') {
+    sendReply(enc.encode('HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'));
+    return true;
+  }
+  const targetUrl = /^https?:\/\//i.test(reqPath) ? reqPath : `http://${hostHdr}${reqPath.startsWith('/') ? '' : '/'}${reqPath}`;
+  const bodyBytes = merged.subarray(headEnd + 4);
+  const res = await fetch(targetUrl, {
+    method,
+    headers: hdrs,
+    body: method !== 'GET' && method !== 'HEAD' && bodyBytes.byteLength ? bodyBytes : undefined,
+    redirect: 'manual',
+  });
+  const resBody = new Uint8Array(await res.arrayBuffer());
+  const statusLines = [`HTTP/1.1 ${res.status} ${res.statusText || 'OK'}`];
+  res.headers.forEach((v, kName) => {
+    if (!/^(transfer-encoding|content-encoding|content-length|connection)$/i.test(kName)) {
+      statusLines.push(`${kName}: ${v}`);
+    }
+  });
+  statusLines.push(`Content-Length: ${resBody.byteLength}`, 'Connection: close', '', '');
+  const resHead = enc.encode(statusLines.join('\r\n'));
+  const full = new Uint8Array(resHead.byteLength + resBody.byteLength);
+  full.set(resHead, 0);
+  full.set(resBody, resHead.byteLength);
+  sendReply(full);
+  return true;
 }
 
 function openChannel(request, env, ctx, kind, cache) {
@@ -829,31 +953,55 @@ function openChannel(request, env, ctx, kind, cache) {
     try { ctx.waitUntil(p); } catch { /* ignore */ }
   };
 
-  const pump = async (sock, reply) => {
+  let headerSentGlobal = false;
+  const sendDownChunk = (value, reply) => {
+    if (!gotAny) {
+      gotAny = true;
+      earlyChunks.length = 0;
+    }
+    down += value.byteLength;
+    if (!headerSentGlobal && reply) {
+      const out = new Uint8Array(reply.length + value.byteLength);
+      out.set(reply);
+      out.set(value, reply.length);
+      ws.send(out);
+      headerSentGlobal = true;
+    } else {
+      headerSentGlobal = true;
+      ws.send(value);
+    }
+  };
+
+  const pump = async (sock, reply, firstByteTimeoutMs = 0) => {
     let got = 0;
-    let headerSent = !reply;
+    if (!reply) headerSentGlobal = true;
     try {
       const reader = sock[k.readable].getReader();
       for (;;) {
-        const { value, done } = await reader.read();
+        let readRes;
+        if (got === 0 && firstByteTimeoutMs > 0) {
+          let timer;
+          try {
+            readRes = await Promise.race([
+              reader.read(),
+              new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error('first byte timeout')), firstByteTimeoutMs);
+              }),
+            ]);
+          } finally {
+            clearTimeout(timer);
+          }
+        } else {
+          readRes = await reader.read();
+        }
+        const { value, done } = readRes;
         if (done) break;
         if (!value || !value.byteLength) continue;
-        if (!gotAny) {
-          gotAny = true;
-          earlyChunks.length = 0;
-        }
         got += value.byteLength;
-        down += value.byteLength;
-        if (!headerSent) {
-          const out = new Uint8Array(reply.length + value.byteLength);
-          out.set(reply);
-          out.set(value, reply.length);
-          ws.send(out);
-          headerSent = true;
-        } else ws.send(value);
+        sendDownChunk(value, reply);
       }
-    } catch { /* remote closed */ }
-    return { got, headerSent };
+    } catch { /* remote closed or timed out */ }
+    return { got, headerSent: headerSentGlobal };
   };
 
   const dialFromPool = async (relays, startIdx = 0) => {
@@ -872,7 +1020,7 @@ function openChannel(request, env, ctx, kind, cache) {
   const start = async (chunk) => {
     const head = kind === k.protoA ? readFrameA(chunk, cache.a) : readFrameB(chunk, cache.b);
     if (head.error) {
-      close(1008);
+      close(head.error === 'cmd' ? 1000 : 1008);
       return;
     }
     userId = head.userId;
@@ -883,13 +1031,43 @@ function openChannel(request, env, ctx, kind, cache) {
       if (head.rest.byteLength) await udpSend(head.rest);
       return;
     }
+    if (Number(head.port) === 53) {
+      const dnsHost = isCloudflareIp(head.host) ? '8.8.8.8' : head.host;
+      try {
+        remote = await dialUpstream(dnsHost, 53, 2000);
+      } catch {
+        try {
+          remote = await dialUpstream('8.8.4.4', 53, 2000);
+        } catch {
+          udpSend = relayPacket(ws, head.reply, (n) => { down += n; });
+          if (head.rest.byteLength) await udpSend(head.rest);
+          return;
+        }
+      }
+      if (closed) {
+        try { remote.close(); } catch { /* ignore */ }
+        return;
+      }
+      writer = remote[k.writable].getWriter();
+      if (head.rest.byteLength) await writer.write(head.rest);
+      flushTimer = setInterval(() => { report(false); }, FLUSH_MS);
+      pump(remote, head.reply, 2500).then(() => close()).catch(() => close());
+      return;
+    }
     if (head.rest.byteLength) {
       earlyChunks.push(head.rest);
       earlyBytes += head.rest.byteLength;
     }
+    const isHttpPort = CF_HTTP_PORTS.has(Number(head.port));
+    if (isHttpPort && isCloudflareTarget(head.host) && !isTestHost(head.host)) {
+      if (earlyChunks.length && await serveHttpFallback(ws, head, earlyChunks, (b) => sendDownChunk(b, head.reply))) {
+        close();
+        return;
+      }
+    }
     const relays = relayCandidates(cache.data[k.relayKey], head.host, head.port);
     let relayIdx = 0;
-    if (isCloudflareIp(head.host) && relays.length) {
+    if (isCloudflareTarget(head.host) && relays.length) {
       retried = true;
       const picked = await dialFromPool(relays, 0);
       remote = picked.sock;
@@ -898,6 +1076,14 @@ function openChannel(request, env, ctx, kind, cache) {
       try {
         remote = await dialUpstream(head.host, head.port);
       } catch (err) {
+        if (isHttpPort && !isTestHost(head.host) && earlyChunks.length) {
+          try {
+            if (await serveHttpFallback(ws, head, earlyChunks, (b) => sendDownChunk(b, head.reply))) {
+              close();
+              return;
+            }
+          } catch { /* ignore */ }
+        }
         if (!relays.length) throw err;
         retried = true;
         const picked = await dialFromPool(relays, 0);
@@ -916,13 +1102,23 @@ function openChannel(request, env, ctx, kind, cache) {
       return;
     }
     flushTimer = setInterval(() => { report(false); }, FLUSH_MS);
-    pump(remote, head.reply).then(async ({ got, headerSent }) => {
+    const fbTimeout = relays.length && !isTestHost(head.host) ? 3000 : 0;
+    pump(remote, head.reply, fbTimeout).then(async ({ got }) => {
       let curGot = got;
-      let curHeaderSent = headerSent;
+      if (curGot === 0 && isHttpPort && !isTestHost(head.host) && earlyChunks.length && !closed) {
+        try {
+          if (await serveHttpFallback(ws, head, earlyChunks, (b) => sendDownChunk(b, head.reply))) {
+            close();
+            return;
+          }
+        } catch { /* ignore */ }
+      }
       while (curGot === 0 && relayIdx < relays.length && !closed) {
         retried = true;
         try {
-          try { writer.releaseLock(); remote.close(); } catch { /* ignore */ }
+          const oldWriter = writer;
+          writer = null;
+          try { oldWriter?.releaseLock(); remote?.close(); } catch { /* ignore */ }
           const picked = await dialFromPool(relays, relayIdx);
           remote = picked.sock;
           relayIdx = picked.nextIdx;
@@ -930,13 +1126,13 @@ function openChannel(request, env, ctx, kind, cache) {
             try { remote.close(); } catch { /* ignore */ }
             return;
           }
-          writer = remote[k.writable].getWriter();
+          const newWriter = remote[k.writable].getWriter();
           for (const c of earlyChunks) {
-            if (c.byteLength) await writer.write(c);
+            if (c.byteLength) await newWriter.write(c);
           }
-          const res = await pump(remote, curHeaderSent ? null : first.reply);
+          writer = newWriter;
+          const res = await pump(remote, headerSentGlobal ? null : first.reply, 3000);
           curGot = res.got;
-          curHeaderSent = res.headerSent;
         } catch {
           break;
         }
@@ -980,7 +1176,7 @@ function relayPacket(ws, reply, count) {
   const k = getK();
   let headerSent = false;
   let buf = new Uint8Array(0);
-  const dohEndpoints = [k.doh2, k.doh1];
+  const dohEndpoints = [k.doh1, k.doh2];
   return async (chunk) => {
     const merged = new Uint8Array(buf.length + chunk.length);
     merged.set(buf);
@@ -1019,7 +1215,9 @@ function relayPacket(ws, reply, count) {
 
 function endpoints(doc, host) {
   const k = getK();
-  const rawMain = doc.settings.publicHost || host;
+  const rawPublic = String(doc.settings.publicHost || '').trim();
+  const cleanPublic = BLOCKED_SNI_HOSTS.has(rawPublic.toLowerCase()) ? '' : rawPublic;
+  const rawMain = cleanPublic || (BLOCKED_SNI_HOSTS.has(String(host || '').toLowerCase()) ? DEFAULT_CUSTOM_DOMAINS[0].host : host);
   const rawIps = String(doc.settings[k.cleanIps] || '')
     .split(/[\s,]+/)
     .map((s) => s.trim())
@@ -1033,17 +1231,18 @@ function endpoints(doc, host) {
       list: [{ addr: rawMain, sni: rawMain, tag: '' }, ...rawIps.map((ip, i) => ({ addr: ip, sni: rawMain, tag: `IP${i + 1}` }))],
     };
   }
-  const main = !doc.settings.publicHost && /\.workers\.dev$/i.test(rawMain)
+  const main = !cleanPublic && /\.workers\.dev$/i.test(rawMain)
     ? DEFAULT_CUSTOM_DOMAINS[0].host
     : rawMain;
-  const ips = rawIps.length ? rawIps : DEFAULT_CLEAN_IPS;
-  if (doc.settings.publicHost) {
+  const filteredIps = rawIps.filter((ip) => !THROTTLED_CLEAN_IPS.has(ip.toLowerCase()));
+  const ips = filteredIps.length ? filteredIps : DEFAULT_CLEAN_IPS;
+  if (cleanPublic) {
     return {
       host: main,
       testMode: false,
       list: [
-        { addr: main, sni: main, tag: 'DIRECT' },
         ...ips.map((ip, i) => ({ addr: ip, sni: main, tag: `CF${i + 1}` })),
+        { addr: DEFAULT_CUSTOM_DOMAINS[0].addr, sni: main, tag: 'DIRECT' },
       ],
     };
   }
@@ -1051,7 +1250,7 @@ function endpoints(doc, host) {
     host: main,
     testMode: false,
     list: [
-      ...DEFAULT_CUSTOM_DOMAINS.map((d) => ({ addr: d.host, sni: d.host, tag: d.tag })),
+      ...DEFAULT_CUSTOM_DOMAINS.map((d) => ({ addr: d.addr || d.host, sni: d.host, tag: d.tag })),
       ...ips.map((ip, i) => ({
         addr: ip,
         sni: DEFAULT_CUSTOM_DOMAINS[i % DEFAULT_CUSTOM_DOMAINS.length].host,
