@@ -1297,20 +1297,17 @@ async function handleXhttpOnMap(sessionsMap, env, ctx, request, mode) {
   }
   if (mode === 'stream' && request.body) {
     sess.touch();
-    const pumpUp = (async () => {
-      try {
-        const reader = request.body.getReader();
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (value && value.byteLength) {
-            sess.touch();
-            await sess.tunnel.onChunk(value);
-          }
+    try {
+      const reader = request.body.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value && value.byteLength) {
+          sess.touch();
+          sess.tunnel.onChunk(value);
         }
-      } catch { /* ignore */ }
-    })();
-    try { ctx?.waitUntil?.(pumpUp); } catch { /* ignore */ }
+      }
+    } catch { /* upload stream ended */ }
     return new Response(null, { status: 200, headers: { 'cache-control': 'no-store', 'x-padding': 'X'.repeat(16) } });
   }
   return notFound();
@@ -1369,7 +1366,7 @@ async function handleXhttpEdge(request, env, ctx, kind, basePath, path, cache) {
   if (env && env.STORE && typeof env.STORE.idFromName === 'function') {
     let h = 0;
     for (let i = 0; i < sid.length; i += 1) h = (h * 31 + sid.charCodeAt(i)) | 0;
-    const shard = `xhttp-${Math.abs(h) & 7}`;
+    const shard = `xhttp-${Math.abs(h) & 15}`;
     const stub = env.STORE.get(env.STORE.idFromName(shard));
     if (typeof stub.fetch === 'function') {
       return stub.fetch('https://do.internal/xhttp', {
@@ -1475,19 +1472,12 @@ function endpoints(doc, host) {
   };
 }
 
-const XHTTP_EXTRA = {
-  scMaxEachPostBytes: 850,
-  scMinPostsIntervalMs: 5,
-  xPaddingBytes: '10-20',
-  xmux: { hMaxRequestTimes: 2, maxConnections: 16 },
-};
-
 function linksFor(doc, user, host) {
   const k = getK();
   const { testMode, list } = endpoints(doc, host);
   const out = [];
   const wsOut = [];
-  const xExtraStr = JSON.stringify(XHTTP_EXTRA);
+  const primaryIb = doc.inbounds.find((ib) => ib.enabled && k.inboundMeta[ib.id]);
   for (const ib of doc.inbounds) {
     if (!ib.enabled) continue;
     const meta = k.inboundMeta[ib.id];
@@ -1523,6 +1513,9 @@ function linksFor(doc, user, host) {
         });
         continue;
       }
+      const isPrimary = ib === primaryIb;
+      const epIdx = list.indexOf(ep);
+      if (!isPrimary && epIdx >= 2) continue;
       const xLabel = `BBG-${meta.protocol.toUpperCase()}-XHTTP${ep.tag ? `-${ep.tag}` : ''}`;
       const qx = new URLSearchParams({
         ...(meta.protocol === k.protoA ? { encryption: 'none' } : {}),
@@ -1534,7 +1527,6 @@ function linksFor(doc, user, host) {
         host: sni,
         path,
         mode: 'packet-up',
-        extra: xExtraStr,
       });
       out.push({
         id: `${ib.id}-xhttp${ep.tag ? `-${ep.tag}` : ''}`,
@@ -1549,7 +1541,8 @@ function linksFor(doc, user, host) {
         uri: `${meta.protocol}://${cred}@${addrStr}:443?${qx}#${encodeURIComponent(xLabel)}`,
       });
 
-      const wLabel = `BBG-${meta.protocol.toUpperCase()}-WS${ep.tag ? `-${ep.tag}` : ''}`;
+      if (!isPrimary || epIdx >= 2) continue;
+      const wLabel = `BBG-${meta.protocol.toUpperCase()}-WS-BACKUP${ep.tag ? `-${ep.tag}` : ''}`;
       const qw = new URLSearchParams({
         ...(meta.protocol === k.protoA ? { encryption: 'none' } : {}),
         security: 'tls',
@@ -1607,7 +1600,7 @@ function formatProfileA(doc, user, links) {
         security: 'tls',
         [k.tlsSettings]: { serverName: l.conn.sni, fingerprint: fp, alpn: ['http/1.1'] },
         ...(isXhttp
-          ? { xhttpSettings: { host: l.conn.sni, path: l.conn.path, mode: 'packet-up', extra: XHTTP_EXTRA } }
+          ? { xhttpSettings: { host: l.conn.sni, path: l.conn.path, mode: 'packet-up' } }
           : { [k.wsSettings]: { path: wsPath, host: l.conn.sni, headers: { Host: l.conn.sni }, heartbeatPeriod: 15 } }),
         [k.sockopt]: { tcpNoDelay: true, tcpFastOpen: true, tcpKeepAliveIdle: 60, tcpKeepAliveInterval: 15, ...(frag && !isXhttp ? { [k.dialerProxy]: k.fragment } : {}) },
       },
